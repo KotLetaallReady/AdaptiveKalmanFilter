@@ -91,31 +91,3 @@ data class FilterResult(
 
     override fun hashCode(): Int = timestamp.hashCode() * 31 + state.hashCode()
 }
-
-// ── AccuracyMetrics ──────────────────────────────────────────────────────────
-
-/**
- * Summary statistics comparing filter output to ground-truth (or raw GPS).
- *
- * @property rmse       Root-Mean-Square Error (metres) — penalises large deviations.
- * @property mae        Mean Absolute Error (metres) — robust to outliers.
- * @property maxError   Maximum single-step error (metres).
- * @property lag        Estimated lag in metres (cross-correlation peak offset).
- * @property stability  Standard deviation of innovations (metres) — lower = smoother.
- * @property sampleCount Number of samples used to compute these metrics.
- */
-data class AccuracyMetrics(
-    val rmse: Double,
-    val mae: Double,
-    val maxError: Double,
-    val lag: Double,
-    val stability: Double,
-    val sampleCount: Int
-) {
-    companion object {
-        val EMPTY = AccuracyMetrics(
-            rmse = Double.NaN, mae = Double.NaN, maxError = Double.NaN,
-            lag = Double.NaN, stability = Double.NaN, sampleCount = 0
-        )
-    }
-}

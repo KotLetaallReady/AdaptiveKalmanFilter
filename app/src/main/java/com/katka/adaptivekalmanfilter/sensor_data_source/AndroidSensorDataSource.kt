@@ -1,13 +1,16 @@
 package com.katka.adaptivekalmanfilter.sensor_data_source
 
-
 import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Looper
+import com.google.android.gms.common.ConnectionResult
+import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -25,8 +28,13 @@ import kotlinx.coroutines.flow.asSharedFlow
  * Android implementation of [SensorDataSource].
  *
  * ── GPS ───────────────────────────────────────────────────────────────────────
- *   Uses [FusedLocationProviderClient] (Google Play Services) with
+ *   Primary path uses [FusedLocationProviderClient] (Google Play Services) with
  *   PRIORITY_HIGH_ACCURACY at [gpsIntervalMs] (default 1 000 ms).
+ *
+ *   If Google Play Services are unavailable (e.g. Huawei devices without GMS),
+ *   the data source falls back to [LocationManager] with
+ *   [LocationManager.GPS_PROVIDER] (or [LocationManager.NETWORK_PROVIDER] when
+ *   GPS is disabled).
  *
  *   Each Location fix provides:
  *     • latitude, longitude (degrees)
@@ -75,6 +83,20 @@ class AndroidSensorDataSource(
     private val sensorManager: SensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
 
+    // Fallback location provider for devices without Google Play Services
+    private val locationManager: LocationManager =
+        context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+
+    // Determine once whether Google Mobile Services are available
+    private val hasGms: Boolean by lazy {
+        try {
+            GoogleApiAvailability.getInstance()
+                .isGooglePlayServicesAvailable(context) == ConnectionResult.SUCCESS
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     // ── Latest IMU snapshot (written by sensor thread, read by GPS callback) ─
     @Volatile private var latestAx: Double = 0.0
     @Volatile private var latestAy: Double = 0.0
@@ -85,7 +107,7 @@ class AndroidSensorDataSource(
     override var isRunning: Boolean = false
         private set
 
-    // ── GPS LocationCallback ─────────────────────────────────────────────────
+    // ── GPS LocationCallback (Google Play Services) ──────────────────────────
     private val locationCallback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
@@ -111,6 +133,29 @@ class AndroidSensorDataSource(
         }
     }
 
+    // ── Fallback LocationListener (android.location API) ─────────────────────
+    private val fallbackListener = object : LocationListener {
+        override fun onLocationChanged(location: android.location.Location) {
+            val observation = Observation(
+                timestamp  = location.time,
+                latitude   = location.latitude,
+                longitude  = location.longitude,
+                accuracy   = location.accuracy,
+                altitude   = if (location.hasAltitude()) location.altitude else 0.0,
+                speed      = if (location.hasSpeed())    location.speed    else 0f,
+                bearing    = if (location.hasBearing())  location.bearing  else 0f,
+                hasSpeed   = location.hasSpeed(),
+                hasBearing = location.hasBearing(),
+                ax = latestAx, ay = latestAy, az = latestAz,
+                hasImu   = hasImu,
+                provider = location.provider ?: "gps"
+            )
+            _observations.tryEmit(observation)
+        }
+
+        // Other LocationListener callbacks are not needed for the fallback path
+    }
+
     // ── SensorEventListener (IMU) ─────────────────────────────────────────────
     override fun onSensorChanged(event: SensorEvent) {
         if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
@@ -134,7 +179,27 @@ class AndroidSensorDataSource(
     override fun start() {
         if (isRunning) return
 
-        // GPS
+        // Choose the appropriate location provider
+        if (hasGms) {
+            startWithFused()
+        } else {
+            startWithLocationManager()
+        }
+
+        // IMU — TYPE_LINEAR_ACCELERATION has gravity already removed
+        sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sensor ->
+            sensorManager.registerListener(
+                this,
+                sensor,
+                SensorManager.SENSOR_DELAY_GAME   // ~20 ms
+            )
+        }
+
+        isRunning = true
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startWithFused() {
         val locationRequest = LocationRequest.Builder(
             Priority.PRIORITY_HIGH_ACCURACY,
             gpsIntervalMs
@@ -148,23 +213,28 @@ class AndroidSensorDataSource(
             locationCallback,
             Looper.getMainLooper()
         )
+    }
 
-        // IMU — TYPE_LINEAR_ACCELERATION has gravity already removed
-        val linearAccSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
-        if (linearAccSensor != null) {
-            sensorManager.registerListener(
-                this,
-                linearAccSensor,
-                SensorManager.SENSOR_DELAY_GAME   // ~20 ms
-            )
-        }
+    @SuppressLint("MissingPermission")
+    private fun startWithLocationManager() {
+        // Prefer GPS if enabled, otherwise fall back to network provider
+        val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+        val provider = if (gpsEnabled) LocationManager.GPS_PROVIDER
+        else LocationManager.NETWORK_PROVIDER
 
-        isRunning = true
+        locationManager.requestLocationUpdates(
+            provider,
+            gpsIntervalMs,
+            minDisplacementM,
+            fallbackListener,
+            Looper.getMainLooper()
+        )
     }
 
     override fun stop() {
         if (!isRunning) return
         fusedClient.removeLocationUpdates(locationCallback)
+        locationManager.removeUpdates(fallbackListener)
         sensorManager.unregisterListener(this)
         hasImu   = false
         isRunning = false

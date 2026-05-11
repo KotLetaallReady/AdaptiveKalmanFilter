@@ -33,7 +33,6 @@ android {
 dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:data"))
-    implementation(project(":core:metrics"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)

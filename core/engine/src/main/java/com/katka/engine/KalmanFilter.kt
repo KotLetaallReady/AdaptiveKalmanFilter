@@ -63,6 +63,8 @@ class KalmanFilter(
     private var state: KalmanState? = null
     private var lastTimestamp: Long = -1L
 
+    private var lastWallClockMs: Long = -1L
+
     /** Reference geographic point — origin of the local coordinate system. */
     var refLat: Double = 0.0
         private set
@@ -87,11 +89,13 @@ class KalmanFilter(
      */
     fun reset(strategy: CoefficientStrategy? = null) {
         state = null
-        lastTimestamp = -1L
+        lastTimestamp   = -1L
+        lastWallClockMs = -1L
         refLat = 0.0
         refLon = 0.0
         strategy?.reset()
     }
+
 
     /**
      * Process one observation.
@@ -109,8 +113,23 @@ class KalmanFilter(
             return initialise(obs)
         }
 
-        val dt = ((obs.timestamp - lastTimestamp) / 1000.0).coerceAtLeast(0.001)
-        lastTimestamp = obs.timestamp
+        val nowMs = System.currentTimeMillis()
+
+        // dt из GPS-timestamp
+        val dtFromGps  = (obs.timestamp - lastTimestamp) / 1000.0
+        // dt из системных часов (всегда корректный)
+        val dtFromWall = if (lastWallClockMs > 0)
+            (nowMs - lastWallClockMs) / 1000.0 else dtFromGps
+
+        // Если GPS-timestamp выглядит подозрительно — берём системные часы
+        val dt = when {
+            dtFromGps < 0.05  -> dtFromWall   // слишком мало — Huawei кривой timestamp
+            dtFromGps > 300.0 -> dtFromWall   // слишком много — явно сбой
+            else              -> dtFromGps    // норма — доверяем GPS
+        }.coerceIn(0.001, 300.0)
+
+        lastTimestamp   = obs.timestamp
+        lastWallClockMs = nowMs
 
         val currentState = state!!
 
@@ -126,12 +145,11 @@ class KalmanFilter(
         val innovation = DoubleArray(H.size) { i -> z[i] - hxPred[i] }
 
         // ── Innovation covariance  S = H·P_pred·Hᵀ + R ──────────────────────
-        //   (also computed inside strategy, but we want it for diagnostics)
         val gainResult = strategy.computeGain(PPred, H, obs)
         val K = gainResult.K
         val R = gainResult.R
         val HP = MatrixOps.mul(H, PPred)
-        val S = MatrixOps.add(MatrixOps.mul(HP, MatrixOps.transpose(H)), R)
+        val S  = MatrixOps.add(MatrixOps.mul(HP, MatrixOps.transpose(H)), R)
 
         // ── State update  x̂ = x̂_pred + K·y ──────────────────────────────────
         val Ky = MatrixOps.mulVec(K, innovation)
@@ -139,22 +157,22 @@ class KalmanFilter(
         val xNew = DoubleArray(KalmanState.DIM) { i -> xPredVec[i] + Ky[i] }
 
         val posterior = KalmanState(
-            x = xNew[0], y = xNew[1],
+            x  = xNew[0], y  = xNew[1],
             vx = xNew[2], vy = xNew[3],
-            P = gainResult.P_updated
+            P  = gainResult.P_updated
         )
         state = posterior
 
         return FilterResult(
-            timestamp = obs.timestamp,
-            state = posterior,
-            predicted = xPred,
-            innovation = innovation,
-            innovationCovS = S,
-            kalmanGain = K,
+            timestamp         = obs.timestamp,
+            state             = posterior,
+            predicted         = xPred,
+            innovation        = innovation,
+            innovationCovS    = S,
+            kalmanGain        = K,
             measurementNoiseR = R,
-            filterMode = FilterMode.CLASSICAL,
-            dt = dt
+            filterMode        = FilterMode.CLASSICAL,
+            dt                = dt
         )
     }
 

@@ -1,7 +1,6 @@
 package com.katka.metrics
 
 import com.katka.model.AccuracyMetrics
-import com.katka.model.FilterResult
 import kotlin.math.sqrt
 
 /**
@@ -78,18 +77,6 @@ object MetricsEvaluator {
             stability = stability,
             sampleCount = n
         )
-    }
-
-    /**
-     * Compute metrics from a list of [core.model.FilterResult] + raw GPS observations.
-     * Convenience overload that extracts (x, y) pairs internally.
-     */
-    fun computeFromResults(
-        results: List<FilterResult>,
-        rawGps: List<Pair<Double, Double>>   // in local metric coords
-    ): AccuracyMetrics {
-        val estimated = results.map { it.state.x to it.state.y }
-        return compute(estimated, rawGps)
     }
 
     /**

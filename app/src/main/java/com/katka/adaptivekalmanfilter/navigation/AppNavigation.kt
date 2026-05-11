@@ -2,7 +2,6 @@ package com.katka.adaptivekalmanfilter.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -11,6 +10,8 @@ import androidx.navigation.compose.rememberNavController
 import com.katka.adaptivekalmanfilter.ui.FilterScreen
 import com.katka.adaptivekalmanfilter.ui.KalmanViewModel
 import com.katka.adaptivekalmanfilter.ui.MenuScreen
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
+
 
 
 // ── Route constants ───────────────────────────────────────────────────────────

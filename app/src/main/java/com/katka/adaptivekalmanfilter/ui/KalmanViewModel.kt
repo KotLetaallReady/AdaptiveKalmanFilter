@@ -7,6 +7,7 @@ import com.katka.adaptivekalmanfilter.model.KalmanReadout
 import com.katka.adaptivekalmanfilter.model.MetricsUiModel
 import com.katka.adaptivekalmanfilter.model.TrackPoint
 import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
+import com.katka.data.SensorDataSource
 import com.katka.engine.CoefficientStartegy.ClassicalCoefficientStrategy
 import com.katka.engine.KalmanFilter
 import com.katka.engine.model.FilterResult
@@ -44,7 +45,7 @@ class KalmanViewModel @Inject constructor(
 
     // ── UI state ─────────────────────────────────────────────────────────────
 
-    private val _uiState = MutableStateFlow<FilterUiState>(FilterUiState.Idle)
+    private val _uiState = MutableStateFlow<FilterUiState>(FilterUiState.NeedsPermission)
     val uiState: StateFlow<FilterUiState> = _uiState.asStateFlow()
 
     // ── Internal accumulators ────────────────────────────────────────────────
