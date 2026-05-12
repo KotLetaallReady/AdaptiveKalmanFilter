@@ -86,14 +86,23 @@ class ClassicalCoefficientStrategy(
     ) {
         if (!adaptiveR) return
 
-        if (innovationWindow.size >= adaptiveWindow) innovationWindow.removeFirst()
+        if (innovationWindow.size >= adaptiveWindow) {
+            innovationWindow.removeFirst()
+            hphtWindow.removeFirst()   // ← новый буфер
+        }
         innovationWindow.addLast(innovation)
-        stepCount++
 
-        if (innovationWindow.size < 3) return  // too few samples yet
+        // Запоминаем HPHt этого шага для усреднения по окну
+        val HP   = MatrixOps.mul(H, P_pred)
+        val HPHt = MatrixOps.mul(HP, MatrixOps.transpose(H))
+        hphtWindow.addLast(HPHt)      // ← новый буфер
+
+        stepCount++
+        if (innovationWindow.size < 3) return
+
+        val m = innovation.size
 
         // S_yy = (1/N)·Σ(y_k · y_kᵀ)
-        val m = innovation.size
         val Syy = MatrixOps.zeros(m, m)
         for (y in innovationWindow) {
             val yyT = MatrixOps.outerProduct(y, y)
@@ -101,18 +110,34 @@ class ClassicalCoefficientStrategy(
         }
         for (i in 0 until m) for (j in 0 until m) Syy[i][j] /= innovationWindow.size
 
-        // H·P_pred·Hᵀ
-        val HP = MatrixOps.mul(H, P_pred)
-        val HPHt = MatrixOps.mul(HP, MatrixOps.transpose(H))
+        // Среднее H·P·Hᵀ по окну вместо текущего одного шага
+        val HPHt_mean = MatrixOps.zeros(m, m)
+        for (hpht in hphtWindow) {
+            for (i in 0 until m) for (j in 0 until m) HPHt_mean[i][j] += hpht[i][j]
+        }
+        for (i in 0 until m) for (j in 0 until m) HPHt_mean[i][j] /= hphtWindow.size
 
-        // R̂_k_raw = S_yy − H·P_pred·Hᵀ
-        val Rraw = MatrixOps.sub(Syy, HPHt)
+        // R̂_raw = S_yy − mean(H·P·Hᵀ)
+        val Rraw = MatrixOps.sub(Syy, HPHt_mean)
 
-        // Clamp: diagonal entries must be > 0 (make PSD)
+        // Clamp диагонали — минимум (minAccuracyM)² чтобы не уйти ниже физического предела
+        val minVariance = (minAccuracyM * minAccuracyM).toDouble()
         val Rclamped = MatrixOps.copy(Rraw)
-        for (i in 0 until m) Rclamped[i][i] = Rclamped[i][i].coerceAtLeast(0.01)
+        for (i in 0 until m) {
+            // Диагональ не ниже минимальной дисперсии GPS
+            Rclamped[i][i] = Rclamped[i][i].coerceAtLeast(minVariance)
+        }
+        // Off-diagonal — симметризуем и не даём выйти за пределы диагоналей
+        for (i in 0 until m) for (j in 0 until m) {
+            if (i != j) {
+                val sym = (Rclamped[i][j] + Rclamped[j][i]) / 2.0
+                val maxOffDiag = 0.99 * kotlin.math.sqrt(Rclamped[i][i] * Rclamped[j][j])
+                Rclamped[i][j] = sym.coerceIn(-maxOffDiag, maxOffDiag)
+                Rclamped[j][i] = Rclamped[i][j]
+            }
+        }
 
-        // Sage-Husa blend: R̂_k = (1 − d_k)·R̂_{k-1} + d_k·R̂_k_raw
+        // Sage-Husa blend
         val dk = (1.0 - forgettingB) / (1.0 - Math.pow(forgettingB, stepCount.toDouble() + 1))
         val prev = adaptiveREstimate ?: Rclamped
         val blended = MatrixOps.zeros(m, m)
@@ -164,8 +189,11 @@ class ClassicalCoefficientStrategy(
         return GainResult(K = K, P_updated = PJoseph, R = R)
     }
 
+    private val hphtWindow = ArrayDeque<Array<DoubleArray>>(adaptiveWindow)
+
     override fun reset() {
         innovationWindow.clear()
+        hphtWindow.clear()
         adaptiveREstimate = null
         stepCount = 0
     }

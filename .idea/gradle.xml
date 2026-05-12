@@ -14,7 +14,6 @@
             <option value="$PROJECT_DIR$/core" />
             <option value="$PROJECT_DIR$/core/coefficients" />
             <option value="$PROJECT_DIR$/core/data" />
-            <option value="$PROJECT_DIR$/core/di" />
             <option value="$PROJECT_DIR$/core/engine" />
             <option value="$PROJECT_DIR$/core/metrics" />
             <option value="$PROJECT_DIR$/core/model" />

@@ -9,6 +9,7 @@ import android.hardware.SensorManager
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Looper
+import android.os.PowerManager
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import com.google.android.gms.location.FusedLocationProviderClient
@@ -69,6 +70,16 @@ class AndroidSensorDataSource(
     private val minDisplacementM: Float = 0f
 ) : SensorDataSource, SensorEventListener {
 
+    private val powerManager: PowerManager =
+        context.getSystemService(Context.POWER_SERVICE) as PowerManager
+
+    private val wakeLock: PowerManager.WakeLock by lazy {
+        powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "KalmanFilter::GpsWakeLock"
+        )
+    }
+
     // ── Shared flow — backpressure drops the oldest unprocessed observation ──
     private val _observations = MutableSharedFlow<Observation>(
         replay = 0,
@@ -122,13 +133,11 @@ class AndroidSensorDataSource(
                 bearing    = if (location.hasBearing())  location.bearing  else 0f,
                 hasSpeed   = location.hasSpeed(),
                 hasBearing = location.hasBearing(),
-                // Snapshot the most recent IMU reading
                 ax = latestAx, ay = latestAy, az = latestAz,
                 hasImu   = hasImu,
                 provider = location.provider ?: "fused"
             )
 
-            // tryEmit is non-suspending; safe to call from a callback
             _observations.tryEmit(observation)
         }
     }
@@ -178,6 +187,7 @@ class AndroidSensorDataSource(
     @SuppressLint("MissingPermission")  // Caller must check permissions before calling start()
     override fun start() {
         if (isRunning) return
+        if (!wakeLock.isHeld) wakeLock.acquire(30 * 60 * 1000L)
 
         // Choose the appropriate location provider
         if (hasGms) {
@@ -222,17 +232,28 @@ class AndroidSensorDataSource(
         val provider = if (gpsEnabled) LocationManager.GPS_PROVIDER
         else LocationManager.NETWORK_PROVIDER
 
-        locationManager.requestLocationUpdates(
-            provider,
-            gpsIntervalMs,
-            minDisplacementM,
-            fallbackListener,
-            Looper.getMainLooper()
-        )
+        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER,
+                0L, 0f,
+                fallbackListener,
+                Looper.getMainLooper()
+            )
+        }
+        if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+            locationManager.requestLocationUpdates(
+                LocationManager.NETWORK_PROVIDER,
+                0L, 0f,
+                fallbackListener,
+                Looper.getMainLooper()
+            )
+        }
     }
 
     override fun stop() {
         if (!isRunning) return
+        if (wakeLock.isHeld) wakeLock.release()
+
         fusedClient.removeLocationUpdates(locationCallback)
         locationManager.removeUpdates(fallbackListener)
         sensorManager.unregisterListener(this)
