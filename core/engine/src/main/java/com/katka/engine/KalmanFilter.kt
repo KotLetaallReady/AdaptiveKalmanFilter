@@ -1,6 +1,6 @@
 package com.katka.engine
 
-import com.katka.engine.CoefficientStartegy.CoefficientStrategy
+import com.katka.engine.coefficient_startegy.CoefficientStrategy
 import com.katka.engine.model.FilterMode
 import com.katka.engine.model.FilterResult
 import com.katka.engine.model.KalmanState
@@ -35,7 +35,7 @@ import kotlin.math.cos
  *
  * ── Update step ──────────────────────────────────────────────────────────────
  *
- *   K is produced by the injected [com.katka.engine.CoefficientStartegy.CoefficientStrategy]:
+ *   K is produced by the injected [com.katka.engine.coefficient_startegy.CoefficientStrategy]:
  *     K = P_pred·Hᵀ·S⁻¹          (classical, computed inside the strategy)
  *
  *   State update:
@@ -84,7 +84,7 @@ class KalmanFilter(
 
     /**
      * Reset everything.  Call this at the start of a new tracking session.
-     * Passes [com.katka.engine.CoefficientStartegy.CoefficientStrategy.reset] down to the strategy so it can flush
+     * Passes [com.katka.engine.coefficient_startegy.CoefficientStrategy.reset] down to the strategy so it can flush
      * its own internal buffers (e.g. an adaptive-R window).
      */
     fun reset(strategy: CoefficientStrategy? = null) {

@@ -1,194 +1,384 @@
 package com.katka.adaptivekalmanfilter.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.katka.adaptivekalmanfilter.model.FilterUiState
 import com.katka.adaptivekalmanfilter.model.KalmanReadout
 import com.katka.adaptivekalmanfilter.model.MetricsUiModel
+import com.katka.adaptivekalmanfilter.model.NeuralFilterUiState
 import com.katka.adaptivekalmanfilter.model.TrackPoint
 import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
-import com.katka.data.SensorDataSource
-import com.katka.engine.CoefficientStartegy.ClassicalCoefficientStrategy
 import com.katka.engine.KalmanFilter
+import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
+import com.katka.engine.coefficient_startegy.NeuralCoefficientStrategy
 import com.katka.engine.model.FilterResult
+import com.katka.engine.neural.NetworkConfig
+import com.katka.engine.neural.NeuralNetwork
+import com.katka.engine.neural.NeuralNetworkTrainer
+import com.katka.engine.neural.NetworkPersistenceManager
+import com.katka.engine.neural.TrainingDataCollector
+import com.katka.engine.neural.TrainingSample
+import com.katka.model.AccuracyMetrics
+import com.katka.model.Observation
 import core.engine.KalmanFilterCoordinator
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import kotlin.math.sqrt
 
-private const val TAG = "KalmanViewModel"
-private const val MAX_TRACK_POINTS = 500   // ограничиваем память
+private const val MAX_TRACK_POINTS = 500
 
 @HiltViewModel
 class KalmanViewModel @Inject constructor(
-    private val sensorDataSource: AndroidSensorDataSource
+    private val sensorDataSource: AndroidSensorDataSource,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
-    // ── Kalman engine ────────────────────────────────────────────────────────
+    // ── Классический фильтр ───────────────────────────────────────────────────
 
-    private val filter   = KalmanFilter(processNoiseStd = 0.5)
-    private val strategy = ClassicalCoefficientStrategy(
-        adaptiveR = true,
-        adaptiveWindow = 20,
-        minAccuracyM = 1f,
-        maxAccuracyM = 50f
+    private val classicalFilter   = KalmanFilter(processNoiseStd = 0.5)
+    private val classicalStrategy = ClassicalCoefficientStrategy(
+        adaptiveR = true, adaptiveWindow = 20, minAccuracyM = 1f, maxAccuracyM = 50f
     )
-
-    // Coordinator создаётся один раз в scope ViewModel
-    private val coordinator = KalmanFilterCoordinator(
+    private val classicalCoordinator = KalmanFilterCoordinator(
         sensorSource = sensorDataSource,
-        filter = filter,
-        strategy = strategy,
-        scope = viewModelScope
+        filter       = classicalFilter,
+        strategy     = classicalStrategy,
+        scope        = viewModelScope
     )
 
-    // ── UI state ─────────────────────────────────────────────────────────────
+    // ── Нейросетевой фильтр ───────────────────────────────────────────────────
+
+    private var neuralFilter:      KalmanFilter?              = null
+    private var neuralStrategy:    NeuralCoefficientStrategy? = null
+    private var neuralCoordinator: KalmanFilterCoordinator?   = null
+
+    // ── Сбор обучающих данных ─────────────────────────────────────────────────
+
+    private val trainingCollector = TrainingDataCollector()
+
+    /** Последнее наблюдение — нужно для accuracy/speed при формировании обучающих пар. */
+    @Volatile private var lastObservation: Observation? = null
+    private var observationJob: Job? = null
+
+    // ── Треки ─────────────────────────────────────────────────────────────────
+
+    private val classicalTrack = mutableListOf<TrackPoint>()
+    private val classicalRaw   = mutableListOf<TrackPoint>()
+    private val neuralTrack    = mutableListOf<TrackPoint>()
+    private val neuralRaw      = mutableListOf<TrackPoint>()
+    private var sessionStartMs = 0L
+
+    // ── UI-состояния ──────────────────────────────────────────────────────────
 
     private val _uiState = MutableStateFlow<FilterUiState>(FilterUiState.NeedsPermission)
     val uiState: StateFlow<FilterUiState> = _uiState.asStateFlow()
 
-    // ── Internal accumulators ────────────────────────────────────────────────
+    private val _neuralUiState = MutableStateFlow<NeuralFilterUiState>(
+        if (NetworkPersistenceManager.exists(context)) NeuralFilterUiState.ReadyToRun
+        else NeuralFilterUiState.NotTrained
+    )
+    val neuralUiState: StateFlow<NeuralFilterUiState> = _neuralUiState.asStateFlow()
 
-    private val trackPoints = mutableListOf<TrackPoint>()
-    private val rawPoints   = mutableListOf<TrackPoint>()
-    private var sessionStartMs = 0L
+    // ── Разрешения ────────────────────────────────────────────────────────────
 
-    // ── Session control ───────────────────────────────────────────────────────
+    fun onPermissionGranted() {
+        if (_uiState.value is FilterUiState.NeedsPermission)
+            _uiState.value = FilterUiState.Idle
+        if (_neuralUiState.value is NeuralFilterUiState.NeedsPermission)
+            _neuralUiState.value = if (NetworkPersistenceManager.exists(context))
+                NeuralFilterUiState.ReadyToRun else NeuralFilterUiState.NotTrained
+    }
+
+    fun onPermissionDenied() {
+        _uiState.value      = FilterUiState.NeedsPermission
+        _neuralUiState.value = NeuralFilterUiState.NeedsPermission
+    }
+
+    // ── Классическая сессия ───────────────────────────────────────────────────
 
     fun startSession() {
-        trackPoints.clear()
-        rawPoints.clear()
+        classicalTrack.clear(); classicalRaw.clear()
         sessionStartMs = System.currentTimeMillis()
+        classicalCoordinator.start()
 
-        coordinator.start()
-
-        // Подписываемся на результаты фильтра
-        coordinator.results
-            .onEach { result -> handleResult(result) }
-            .catch  { e -> _uiState.value = FilterUiState.Error(e.message ?: "Unknown error") }
+        classicalCoordinator.results
+            .onEach { handleClassicalResult(it) }
+            .catch  { e -> _uiState.value = FilterUiState.Error(e.message ?: "Error") }
             .launchIn(viewModelScope)
 
-        _uiState.value = FilterUiState.Running(
-            readout        = KalmanReadout(),
-            trackPoints    = emptyList(),
-            rawPoints      = emptyList(),
-            elapsedSeconds = 0
-        )
+        _uiState.value = FilterUiState.Running(KalmanReadout(), emptyList(), emptyList(), 0)
     }
 
     fun stopSession() {
-        coordinator.stop()
-
-        val metrics = coordinator.computeMetrics()
-        val metricsUi = MetricsUiModel(
-            rmse = "%.2f м".format(metrics.rmse),
-            mae = "%.2f м".format(metrics.mae),
-            maxError = "%.2f м".format(metrics.maxError),
-            stability = "%.3f м".format(metrics.stability),
-            lag = "%.1f шаг".format(metrics.lag),
-            sampleCount = metrics.sampleCount
-        )
-
-        val current = _uiState.value
-        val running = current as? FilterUiState.Running ?: return
-
+        classicalCoordinator.stop()
+        val current = _uiState.value as? FilterUiState.Running ?: return
         _uiState.value = FilterUiState.Finished(
-            readout        = running.readout,
-            trackPoints    = trackPoints.toList(),
-            rawPoints      = rawPoints.toList(),
-            metrics        = metricsUi,
-            elapsedSeconds = running.elapsedSeconds
+            readout        = current.readout,
+            trackPoints    = classicalTrack.toList(),
+            rawPoints      = classicalRaw.toList(),
+            metrics        = classicalCoordinator.computeMetrics().toUiModel(),
+            elapsedSeconds = current.elapsedSeconds
         )
     }
 
     fun resetToIdle() {
-        coordinator.stop()
-        trackPoints.clear()
-        rawPoints.clear()
+        classicalCoordinator.stop()
+        classicalTrack.clear(); classicalRaw.clear()
         _uiState.value = FilterUiState.Idle
     }
 
-    fun onPermissionGranted() {
-        if (_uiState.value is FilterUiState.NeedsPermission) {
-            _uiState.value = FilterUiState.Idle
+    // ── Нейросеть: фаза сбора данных ─────────────────────────────────────────
+
+    fun startDataCollection() {
+        trainingCollector.reset()
+        lastObservation = null
+        neuralTrack.clear(); neuralRaw.clear()
+        sessionStartMs = System.currentTimeMillis()
+
+        // SharedFlow поддерживает несколько подписчиков одновременно — подписываемся
+        // параллельно с координатором, чтобы иметь доступ к accuracy/speed из Observation.
+        observationJob = sensorDataSource.observations
+            .onEach { obs -> lastObservation = obs }
+            .launchIn(viewModelScope)
+
+        classicalCoordinator.start()
+
+        classicalCoordinator.results
+            .onEach { result ->
+                if (result.dt == 0.0) return@onEach
+                lastObservation?.let { obs ->
+                    trainingCollector.addStep(obs, result, result.dt * 1000)
+                }
+                updateCollectionUiState(result)
+            }
+            .catch { e -> _neuralUiState.value = NeuralFilterUiState.Error(e.message ?: "Error") }
+            .launchIn(viewModelScope)
+
+        _neuralUiState.value = NeuralFilterUiState.CollectingData(sampleCount = 0)
+    }
+
+    fun stopDataCollectionAndTrain() {
+        observationJob?.cancel(); observationJob = null
+        classicalCoordinator.stop()
+
+        val samples = trainingCollector.samples
+        if (samples.size < NeuralFilterUiState.MIN_SAMPLES) {
+            _neuralUiState.value = NeuralFilterUiState.Error(
+                "Мало данных: ${samples.size} / ${NeuralFilterUiState.MIN_SAMPLES}. Пройдите маршрут дольше."
+            )
+            return
+        }
+        launchTraining(samples)
+    }
+
+    private fun updateCollectionUiState(result: FilterResult) {
+        val filtered = TrackPoint(result.state.x.toFloat(), result.state.y.toFloat())
+        val raw = classicalCoordinator.getRawGpsHistory().lastOrNull()
+            ?.let { TrackPoint(it.first.toFloat(), it.second.toFloat()) } ?: filtered
+
+        if (neuralTrack.size >= MAX_TRACK_POINTS) { neuralTrack.removeAt(0); neuralRaw.removeAt(0) }
+        neuralTrack.add(filtered); neuralRaw.add(raw)
+
+        val (fLat, fLon) = classicalFilter.localToGeo(result.state.x, result.state.y)
+
+        _neuralUiState.value = NeuralFilterUiState.CollectingData(
+            sampleCount    = trainingCollector.sampleCount,
+            readout        = buildReadout(result, classicalFilter, fLat, fLon, raw),
+            trackPoints    = neuralTrack.toList(),
+            rawPoints      = neuralRaw.toList(),
+            elapsedSeconds = elapsedSec()
+        )
+    }
+
+    // ── Нейросеть: обучение ───────────────────────────────────────────────────
+
+    private fun launchTraining(samples: List<TrainingSample>) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val network  = NeuralNetwork(NetworkConfig.default())
+            val trainer  = NeuralNetworkTrainer(network, learningRate = 1e-3, batchSize = 32)
+            val epochs   = NeuralFilterUiState.TRAINING_EPOCHS
+            val lossHist = mutableListOf<Double>()
+
+            for (epoch in 0 until epochs) {
+                var sum = 0.0; var n = 0
+                for (batch in samples.shuffled().chunked(32)) {
+                    sum += trainer.trainBatch(batch); n++
+                }
+                lossHist.add(if (n > 0) sum / n else 0.0)
+
+                _neuralUiState.value = NeuralFilterUiState.Training(
+                    epoch        = epoch + 1,
+                    totalEpochs  = epochs,
+                    currentLoss  = lossHist.last(),
+                    lossHistory  = lossHist.toList()
+                )
+            }
+
+            withContext(Dispatchers.IO) { NetworkPersistenceManager.save(context, network) }
+            _neuralUiState.value = NeuralFilterUiState.ReadyToRun
         }
     }
 
-    fun onPermissionDenied() {
-        _uiState.value = FilterUiState.NeedsPermission
+    // ── Нейросеть: инференс-сессия ────────────────────────────────────────────
+
+    fun startNeuralSession() {
+        val network = NetworkPersistenceManager.load(context) ?: run {
+            _neuralUiState.value = NeuralFilterUiState.NotTrained; return
+        }
+
+        neuralTrack.clear(); neuralRaw.clear()
+        sessionStartMs = System.currentTimeMillis()
+
+        val strategy    = NeuralCoefficientStrategy(network)
+        val filter      = KalmanFilter(processNoiseStd = 0.5)
+        neuralStrategy  = strategy
+        neuralFilter    = filter
+
+        val coordinator = KalmanFilterCoordinator(
+            sensorSource = sensorDataSource,
+            filter       = filter,
+            strategy     = strategy,
+            scope        = viewModelScope
+        )
+        neuralCoordinator = coordinator
+        coordinator.start()
+
+        coordinator.results
+            .onEach { result -> handleNeuralResult(result, strategy, filter, coordinator) }
+            .catch { e -> _neuralUiState.value = NeuralFilterUiState.Error(e.message ?: "Error") }
+            .launchIn(viewModelScope)
+
+        _neuralUiState.value = NeuralFilterUiState.Running(
+            KalmanReadout(), emptyList(), emptyList(), 0
+        )
     }
 
-    // ── Private ───────────────────────────────────────────────────────────────
+    fun stopNeuralSession() {
+        val coordinator = neuralCoordinator ?: return
+        coordinator.stop()
+        val current = _neuralUiState.value as? NeuralFilterUiState.Running ?: return
+        _neuralUiState.value = NeuralFilterUiState.Finished(
+            readout        = current.readout,
+            trackPoints    = neuralTrack.toList(),
+            rawPoints      = neuralRaw.toList(),
+            metrics        = coordinator.computeMetrics().toUiModel(),
+            elapsedSeconds = current.elapsedSeconds
+        )
+    }
 
-    private fun handleResult(result: FilterResult) {
-        // Пропускаем инициализационный шаг (dt == 0)
+    fun resetNeuralToReady() {
+        neuralCoordinator?.stop()
+        neuralTrack.clear(); neuralRaw.clear()
+        _neuralUiState.value = if (NetworkPersistenceManager.exists(context))
+            NeuralFilterUiState.ReadyToRun else NeuralFilterUiState.NotTrained
+    }
+
+    fun deleteTrainedNetwork() {
+        NetworkPersistenceManager.delete(context)
+        neuralCoordinator?.stop()
+        _neuralUiState.value = NeuralFilterUiState.NotTrained
+    }
+
+    // ── Приватные обработчики результатов ─────────────────────────────────────
+
+    private fun handleClassicalResult(result: FilterResult) {
         if (result.dt == 0.0) return
+        val filtered = TrackPoint(result.state.x.toFloat(), result.state.y.toFloat())
+        val raw = classicalCoordinator.getRawGpsHistory().lastOrNull()
+            ?.let { TrackPoint(it.first.toFloat(), it.second.toFloat()) } ?: filtered
 
-        // Накапливаем трек (downsampling если очень много точек)
-        val filteredPoint = TrackPoint(result.state.x.toFloat(), result.state.y.toFloat())
-        val rawPoint      = coordinator.getRawGpsHistory()
-            .lastOrNull()
-            ?.let { TrackPoint(it.first.toFloat(), it.second.toFloat()) }
-            ?: filteredPoint
+        if (classicalTrack.size >= MAX_TRACK_POINTS) { classicalTrack.removeAt(0); classicalRaw.removeAt(0) }
+        classicalTrack.add(filtered); classicalRaw.add(raw)
 
-        if (trackPoints.size >= MAX_TRACK_POINTS) {
-            trackPoints.removeAt(0)
-            rawPoints.removeAt(0)
-        }
-        trackPoints.add(filteredPoint)
-        rawPoints.add(rawPoint)
+        val (fLat, fLon) = classicalFilter.localToGeo(result.state.x, result.state.y)
 
-        // K — берём позиционные элементы [0][0] и [1][1]
-        val K = result.kalmanGain
-        val kPosX = if (K.isNotEmpty() && K[0].isNotEmpty()) K[0][0] else 0.0
-        val kPosY = if (K.size > 1 && K[1].isNotEmpty()) K[1][1] else 0.0
+        _uiState.value = FilterUiState.Running(
+            readout        = buildReadout(result, classicalFilter, fLat, fLon, raw),
+            trackPoints    = classicalTrack.toList(),
+            rawPoints      = classicalRaw.toList(),
+            elapsedSeconds = elapsedSec()
+        )
+    }
 
-        // R — диагональные элементы
-        val R = result.measurementNoiseR
-        val rXX = if (R.isNotEmpty() && R[0].isNotEmpty()) R[0][0] else 0.0
-        val rYY = if (R.size > 1 && R[1].isNotEmpty()) R[1][1] else 0.0
+    private fun handleNeuralResult(
+        result:      FilterResult,
+        strategy: NeuralCoefficientStrategy,
+        filter:      KalmanFilter,
+        coordinator: KalmanFilterCoordinator
+    ) {
+        if (result.dt == 0.0) return
+        // Обновляем буфер инноваций нейростратегии после каждого шага
+        strategy.updateInnovation(result.innovation)
 
-        // Инновация ||y||
-        val innov = result.innovation
-        val innovMag = if (innov.size >= 2)
-            sqrt(innov[0] * innov[0] + innov[1] * innov[1]) else 0.0
+        val filtered = TrackPoint(result.state.x.toFloat(), result.state.y.toFloat())
+        val raw = coordinator.getRawGpsHistory().lastOrNull()
+            ?.let { TrackPoint(it.first.toFloat(), it.second.toFloat()) } ?: filtered
 
-        // Обратная конвертация filtered X,Y → lat/lon для отображения
+        if (neuralTrack.size >= MAX_TRACK_POINTS) { neuralTrack.removeAt(0); neuralRaw.removeAt(0) }
+        neuralTrack.add(filtered); neuralRaw.add(raw)
+
         val (fLat, fLon) = filter.localToGeo(result.state.x, result.state.y)
-        val (rLat, rLon) = rawPoints.lastOrNull()
-            ?.let { filter.localToGeo(it.x.toDouble(), it.y.toDouble()) }
-            ?: (fLat to fLon)
 
-        val elapsed = ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+        _neuralUiState.value = NeuralFilterUiState.Running(
+            readout          = buildReadout(result, filter, fLat, fLon, raw),
+            trackPoints      = neuralTrack.toList(),
+            rawPoints        = neuralRaw.toList(),
+            elapsedSeconds   = elapsedSec(),
+            isUsingNeuralGain = strategy.isNetworkReady
+        )
+    }
 
-        val readout = KalmanReadout(
-            filteredLat         = fLat,
-            filteredLon         = fLon,
-            rawLat              = rLat,
-            rawLon              = rLon,
-            vxMs                = result.state.vx,
-            vyMs                = result.state.vy,
-            rXX                 = rXX,
-            rYY                 = rYY,
-            kPosX               = kPosX,
-            kPosY               = kPosY,
+    // ── Утилиты ───────────────────────────────────────────────────────────────
+
+    private fun buildReadout(
+        result: FilterResult,
+        filter: KalmanFilter,
+        fLat:   Double,
+        fLon:   Double,
+        raw:    TrackPoint
+    ): KalmanReadout {
+        val K     = result.kalmanGain
+        val R     = result.measurementNoiseR
+        val innov = result.innovation
+        val innovMag = if (innov.size >= 2) sqrt(innov[0]*innov[0] + innov[1]*innov[1]) else 0.0
+        val (rLat, rLon) = filter.localToGeo(raw.x.toDouble(), raw.y.toDouble())
+        return KalmanReadout(
+            filteredLat         = fLat,          filteredLon         = fLon,
+            rawLat              = rLat,           rawLon              = rLon,
+            vxMs                = result.state.vx, vyMs              = result.state.vy,
+            rXX                 = R.getOrNull(0)?.getOrNull(0) ?: 0.0,
+            rYY                 = R.getOrNull(1)?.getOrNull(1) ?: 0.0,
+            kPosX               = K.getOrNull(0)?.getOrNull(0) ?: 0.0,
+            kPosY               = K.getOrNull(1)?.getOrNull(1) ?: 0.0,
             posUncertaintyM     = result.state.positionUncertaintyMeters,
             innovationMagnitude = innovMag,
             dtMs                = result.dt * 1000.0,
-            gpsAccuracyM        = 0f  // raw accuracy хранится в Observation, не в FilterResult
-        )
-
-        _uiState.value = FilterUiState.Running(
-            readout        = readout,
-            trackPoints    = trackPoints.toList(),
-            rawPoints      = rawPoints.toList(),
-            elapsedSeconds = elapsed
+            gpsAccuracyM        = 0f
         )
     }
 
+    private fun elapsedSec() = ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
+
+    private fun AccuracyMetrics.toUiModel() = MetricsUiModel(
+        rmse        = "%.2f м".format(rmse),
+        mae         = "%.2f м".format(mae),
+        maxError    = "%.2f м".format(maxError),
+        stability   = "%.3f м".format(stability),
+        lag         = "%.1f шаг".format(lag),
+        sampleCount = sampleCount
+    )
+
     override fun onCleared() {
         super.onCleared()
-        coordinator.stop()
+        classicalCoordinator.stop()
+        neuralCoordinator?.stop()
+        observationJob?.cancel()
     }
 }

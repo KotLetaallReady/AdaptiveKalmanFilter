@@ -1,4 +1,4 @@
-package com.katka.engine.CoefficientStartegy
+package com.katka.engine.coefficient_startegy
 
 import com.katka.engine.MatrixOps
 import com.katka.engine.model.GainResult

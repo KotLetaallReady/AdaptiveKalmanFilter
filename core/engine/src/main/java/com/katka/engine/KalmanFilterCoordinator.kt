@@ -2,8 +2,8 @@ package core.engine
 
 import android.util.Log
 import com.katka.data.SensorDataSource
-import com.katka.engine.CoefficientStartegy.ClassicalCoefficientStrategy
-import com.katka.engine.CoefficientStartegy.CoefficientStrategy
+import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
+import com.katka.engine.coefficient_startegy.CoefficientStrategy
 import com.katka.engine.KalmanFilter
 import com.katka.model.AccuracyMetrics
 import com.katka.engine.model.FilterMode

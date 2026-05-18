@@ -1,6 +1,7 @@
 package com.katka.adaptivekalmanfilter.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavHostController
@@ -11,7 +12,7 @@ import com.katka.adaptivekalmanfilter.ui.FilterScreen
 import com.katka.adaptivekalmanfilter.ui.KalmanViewModel
 import com.katka.adaptivekalmanfilter.ui.MenuScreen
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-
+import com.katka.adaptivekalmanfilter.ui.NeuralFilterScreen
 
 
 // ── Route constants ───────────────────────────────────────────────────────────
@@ -19,6 +20,7 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 object Routes {
     const val MENU   = "menu"
     const val FILTER = "filter"
+    const val NEURAL_FILTER = "neural_filter"
 }
 
 // ── NavHost ───────────────────────────────────────────────────────────────────
@@ -47,16 +49,11 @@ fun AppNavigation(
         // ── Экран меню ────────────────────────────────────────────────────────
         composable(Routes.MENU) {
             MenuScreen(
-                uiState          = uiState,
-                onStartSession   = {
-                    viewModel.startSession()
-                    navController.navigate(Routes.FILTER) {
-                        // Оставляем Menu в back-стеке — кнопка «назад» работает
-                        launchSingleTop = true
-                    }
-                },
-                onPermissionGranted = viewModel::onPermissionGranted,
-                onPermissionDenied  = viewModel::onPermissionDenied
+                uiState                 = viewModel.uiState.collectAsState().value,
+                onStartClassicalSession = { navController.navigate("filter") },
+                onStartNeuralSession    = { navController.navigate("neural_filter") },
+                onPermissionGranted     = viewModel::onPermissionGranted,
+                onPermissionDenied      = viewModel::onPermissionDenied
             )
         }
 
@@ -72,6 +69,17 @@ fun AppNavigation(
                         popUpTo(Routes.MENU) { inclusive = true }
                     }
                 }
+            )
+        }
+        composable(Routes.NEURAL_FILTER) {
+            NeuralFilterScreen(
+                uiState              = viewModel.neuralUiState.collectAsState().value,
+                onStartCollection    = viewModel::startDataCollection,
+                onStopAndTrain       = viewModel::stopDataCollectionAndTrain,
+                onStartNeuralSession = viewModel::startNeuralSession,
+                onStopNeuralSession  = viewModel::stopNeuralSession,
+                onReset              = viewModel::resetNeuralToReady,
+                onRetrain            = viewModel::deleteTrainedNetwork
             )
         }
     }
