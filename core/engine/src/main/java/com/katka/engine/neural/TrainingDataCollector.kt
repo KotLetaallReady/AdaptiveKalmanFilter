@@ -56,7 +56,7 @@ class TrainingDataCollector(
         /** Total number of input features consumed by the neural network. */
         const val FEATURE_SIZE = INNOVATION_WINDOW * 2 + 4   // = 24
         /** Number of output labels (K matrix elements). */
-        const val LABEL_SIZE = 4
+        const val LABEL_SIZE = 1
     }
 
     // ── Internal state ────────────────────────────────────────────────────────
@@ -85,19 +85,21 @@ class TrainingDataCollector(
      * @param dtMs    Time elapsed since the previous GPS fix (milliseconds).
      */
     fun addStep(obs: Observation, result: FilterResult, dtMs: Double) {
-        // 1. Update innovation buffer
         if (innovationBuffer.size >= innovationWindowSize) innovationBuffer.removeFirst()
         innovationBuffer.addLast(result.innovation.copyOf())
-
-        // 2. Wait for a full window before generating samples
         if (innovationBuffer.size < innovationWindowSize) return
 
-        // 3. Build feature vector and label
+        val nis = result.nis
+        if (nis.isNaN() || nis <= 0.0) return
+
+        val alpha = nis.coerceIn(0.1, 20.0)
+
         val features = buildFeatures(obs, result, dtMs)
-        val labels   = extractLabels(result.kalmanGain)
+        val labels = doubleArrayOf(alpha)  // один выход
 
         _samples.add(TrainingSample(features, labels))
     }
+
 
     /** Clear both the ring-buffer and the accumulated samples. */
     fun reset() {

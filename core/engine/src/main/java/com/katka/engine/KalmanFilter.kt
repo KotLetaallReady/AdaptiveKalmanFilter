@@ -108,14 +108,12 @@ class KalmanFilter(
      * @return         Posterior state and diagnostics for this step.
      */
     fun process(obs: Observation, strategy: CoefficientStrategy): FilterResult {
-        // ── Initialise on first observation ──────────────────────────────────
         if (!isInitialised) {
             return initialise(obs)
         }
 
         val nowMs = System.currentTimeMillis()
 
-        // ── dt с защитой от кривых Huawei-timestamps ─────────────────────────
         val dtFromGps  = (obs.timestamp - lastTimestamp) / 1000.0
         val dtFromWall = if (lastWallClockMs > 0)
             (nowMs - lastWallClockMs) / 1000.0
@@ -124,13 +122,13 @@ class KalmanFilter(
 
         val dt = when {
             dtFromGps <= 0 ->
-                dtFromWall                          // GPS-timestamp ушёл назад
+                dtFromWall
             dtFromWall <= 0 ->
-                dtFromGps.coerceIn(0.001, 30.0)    // wall clock не инициализирован
+                dtFromGps.coerceIn(0.001, 30.0)
             dtFromGps / dtFromWall > 3.0 ->
-                dtFromWall                          // GPS-timestamp сильно впереди wall
+                dtFromWall
             dtFromWall / dtFromGps > 3.0 ->
-                dtFromWall                          // GPS-timestamp сильно отстаёт (кэш)
+                dtFromWall
             else ->
                 dtFromGps
         }.coerceIn(0.001, 30.0)
@@ -140,59 +138,55 @@ class KalmanFilter(
 
         val currentState = state!!
 
-        // ── PREDICT ──────────────────────────────────────────────────────────
         val (xPred, PPred) = predict(currentState, dt, obs)
 
-        // ── Convert GPS fix to local metres ──────────────────────────────────
         val (gpsX, gpsY) = geoToLocal(obs.latitude, obs.longitude)
         val z = doubleArrayOf(gpsX, gpsY)
 
-        // ── Innovation  y = z − H·x̂_pred ─────────────────────────────────────
         val hxPred     = MatrixOps.mulVec(H, xPred.toVector())
         val innovation = DoubleArray(H.size) { i -> z[i] - hxPred[i] }
 
-        // ── Innovation gating — отбрасываем физически невозможные фиксы ──────
         val innovationMag = kotlin.math.sqrt(
             innovation[0] * innovation[0] + innovation[1] * innovation[1]
         )
-        // Порог = 5·σ_pos, но не меньше 50м (на старте σ большая)
-        val gateThreshold = (xPred.positionUncertaintyMeters * 5.0).coerceAtLeast(50.0)
+
+        // ИЗМЕНЕНО: было coerceAtLeast(50.0), теперь coerceIn(15.0, 80.0)
+        val gateThreshold = (xPred.positionUncertaintyMeters * 5.0).coerceIn(15.0, 80.0)
 
         if (innovationMag > gateThreshold) {
-            // Фикс отброшен — возвращаем предсказанное состояние без обновления
-            // P продолжает расти, поэтому следующий валидный фикс будет доверен больше
             state = xPred
             val zeroK = MatrixOps.zeros(KalmanState.DIM, 2)
-            val zeroR = MatrixOps.zeros(2, 2)
+            val Rgate = MatrixOps.diagonal(doubleArrayOf(
+                (obs.accuracy * obs.accuracy).toDouble().coerceAtLeast(1.0),
+                (obs.accuracy * obs.accuracy).toDouble().coerceAtLeast(1.0)
+            ))
+            val HP   = MatrixOps.mul(H, PPred)
+            val HPHt = MatrixOps.mul(HP, MatrixOps.transpose(H))
+            val Sgate = MatrixOps.add(HPHt, Rgate)
             return FilterResult(
                 timestamp         = obs.timestamp,
                 state             = xPred,
                 predicted         = xPred,
                 innovation        = innovation,
-                innovationCovS    = zeroR,
+                innovationCovS    = Sgate,
                 kalmanGain        = zeroK,
-                measurementNoiseR = zeroR,
+                measurementNoiseR = Rgate,
                 filterMode        = FilterMode.CLASSICAL,
                 dt                = dt
             )
         }
 
-        // ── Compute gain & R ──────────────────────────────────────────────────
         val gainResult = strategy.computeGain(PPred, H, obs)
         val K = gainResult.K
         val R = gainResult.R
 
-        // ── Innovation covariance  S = H·P_pred·Hᵀ + R ───────────────────────
         val HP = MatrixOps.mul(H, PPred)
         val S  = MatrixOps.add(MatrixOps.mul(HP, MatrixOps.transpose(H)), R)
 
-        // ── State update  x̂ = x̂_pred + K·y ──────────────────────────────────
         val Ky       = MatrixOps.mulVec(K, innovation)
         val xPredVec = xPred.toVector()
         val xNew     = DoubleArray(KalmanState.DIM) { i -> xPredVec[i] + Ky[i] }
 
-        // ── Clamp скорости до физически разумных значений ─────────────────────
-        // 15 м/с ≈ 54 км/ч — достаточно для пешехода, велосипеда и медленного авто
         val maxSpeedMs = 15.0
         xNew[2] = xNew[2].coerceIn(-maxSpeedMs, maxSpeedMs)
         xNew[3] = xNew[3].coerceIn(-maxSpeedMs, maxSpeedMs)
@@ -215,8 +209,7 @@ class KalmanFilter(
             filterMode        = FilterMode.CLASSICAL,
             dt                = dt
         )
-    }
-    /** Return the current posterior estimate without processing a new observation. */
+    }    /** Return the current posterior estimate without processing a new observation. */
     fun getCurrentState(): KalmanState? = state
 
     // ── Coordinate conversion ────────────────────────────────────────────────
@@ -323,7 +316,7 @@ class KalmanFilter(
         )
 
         // u — acceleration control input (zero if no IMU)
-        val u = if (obs.hasImu) doubleArrayOf(obs.ax, obs.ay) else doubleArrayOf(0.0, 0.0)
+        val u = doubleArrayOf(0.0, 0.0)
 
         // x̂_pred = F·x + B·u
         val Fx  = MatrixOps.mulVec(F, s.toVector())

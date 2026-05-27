@@ -1,6 +1,5 @@
-package com.katka.adaptivekalmanfilter.ui
+package com.katka.adaptivekalmanfilter.ui.classical_filter
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -12,7 +11,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -43,7 +41,8 @@ import com.katka.adaptivekalmanfilter.model.TrackPoint
 @Composable
 fun FilterScreen(
     uiState: FilterUiState,
-    onStop: () -> Unit,
+    onStart: () -> Unit,          // ДОБАВИТЬ
+    onStop:  () -> Unit,
     onReset: () -> Unit
 ) {
     val scrollState = rememberScrollState()
@@ -59,12 +58,15 @@ fun FilterScreen(
                 .verticalScroll(scrollState)
                 .padding(bottom = 100.dp)
         ) {
-            // ── Header ──────────────────────────────────────────────────────
             FilterHeader(uiState)
-
             Spacer(modifier = Modifier.height(12.dp))
 
             when (uiState) {
+                // ДОБАВИТЬ: состояние Idle — показываем онбординг
+                is FilterUiState.Idle -> {
+                    IdleContent()
+                }
+
                 is FilterUiState.Running -> {
                     TrackCanvas(
                         filteredPoints = uiState.trackPoints,
@@ -80,6 +82,7 @@ fun FilterScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                     InnovationIndicator(uiState.readout.innovationMagnitude)
                 }
+
                 is FilterUiState.Finished -> {
                     TrackCanvas(
                         filteredPoints = uiState.trackPoints,
@@ -91,13 +94,28 @@ fun FilterScreen(
                     Spacer(modifier = Modifier.height(16.dp))
                     KalmanReadoutGrid(uiState.readout)
                 }
+
+                is FilterUiState.Error -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(ErrorRed.copy(0.1f))
+                            .border(1.dp, ErrorRed.copy(0.4f), RoundedCornerShape(8.dp))
+                            .padding(16.dp)
+                    ) {
+                        Text(uiState.message, style = ReadoutStyle.copy(color = ErrorRed))
+                    }
+                }
+
                 else -> Unit
             }
         }
 
-        // ── Floating action button ───────────────────────────────────────────
         BottomActionBar(
             uiState = uiState,
+            onStart = onStart,
             onStop  = onStop,
             onReset = onReset,
             modifier = Modifier.align(Alignment.BottomCenter)
@@ -454,14 +472,15 @@ private fun MetricCell(label: String, value: String, color: Color, modifier: Mod
 
 @Composable
 private fun BottomActionBar(
-    uiState: FilterUiState,
-    onStop: () -> Unit,
-    onReset: () -> Unit,
+    uiState:  FilterUiState,
+    onStart:  () -> Unit,      // ДОБАВИТЬ
+    onStop:   () -> Unit,
+    onReset:  () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth(),
-        color    = Surface,
+        modifier       = modifier.fillMaxWidth(),
+        color          = Surface,
         tonalElevation = 8.dp
     ) {
         Row(
@@ -469,12 +488,36 @@ private fun BottomActionBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             when (uiState) {
+                // ДОБАВИТЬ: кнопка старта для Idle
+                is FilterUiState.Idle -> {
+                    Button(
+                        onClick  = onStart,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape    = RoundedCornerShape(4.dp),
+                        colors   = ButtonDefaults.buttonColors(
+                            containerColor = SignalGreen.copy(alpha = 0.12f),
+                            contentColor   = SignalGreen
+                        ),
+                        border = BorderStroke(1.dp, SignalGreen.copy(alpha = 0.5f))
+                    ) {
+                        Text(
+                            "ЗАПУСТИТЬ ФИЛЬТР",
+                            style = ReadoutStyle.copy(
+                                color         = SignalGreen,
+                                fontWeight    = FontWeight.Bold,
+                                letterSpacing = 3.sp,
+                                fontSize      = 13.sp
+                            )
+                        )
+                    }
+                }
+
                 is FilterUiState.Running -> {
                     Button(
-                        onClick = onStop,
+                        onClick  = onStop,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape  = RoundedCornerShape(4.dp),
-                        colors = ButtonDefaults.buttonColors(
+                        shape    = RoundedCornerShape(4.dp),
+                        colors   = ButtonDefaults.buttonColors(
                             containerColor = ErrorRed.copy(alpha = 0.15f),
                             contentColor   = ErrorRed
                         ),
@@ -483,18 +526,21 @@ private fun BottomActionBar(
                         Text(
                             "ОСТАНОВИТЬ",
                             style = ReadoutStyle.copy(
-                                color = ErrorRed, fontWeight = FontWeight.Bold,
-                                letterSpacing = 3.sp, fontSize = 13.sp
+                                color         = ErrorRed,
+                                fontWeight    = FontWeight.Bold,
+                                letterSpacing = 3.sp,
+                                fontSize      = 13.sp
                             )
                         )
                     }
                 }
+
                 is FilterUiState.Finished -> {
                     Button(
-                        onClick = onReset,
+                        onClick  = onReset,
                         modifier = Modifier.fillMaxWidth().height(52.dp),
-                        shape  = RoundedCornerShape(4.dp),
-                        colors = ButtonDefaults.buttonColors(
+                        shape    = RoundedCornerShape(4.dp),
+                        colors   = ButtonDefaults.buttonColors(
                             containerColor = SignalDim,
                             contentColor   = SignalGreen
                         )
@@ -502,12 +548,15 @@ private fun BottomActionBar(
                         Text(
                             "НОВАЯ СЕССИЯ",
                             style = ReadoutStyle.copy(
-                                color = SignalGreen, fontWeight = FontWeight.Bold,
-                                letterSpacing = 3.sp, fontSize = 13.sp
+                                color         = SignalGreen,
+                                fontWeight    = FontWeight.Bold,
+                                letterSpacing = 3.sp,
+                                fontSize      = 13.sp
                             )
                         )
                     }
                 }
+
                 else -> Unit
             }
         }
@@ -547,4 +596,73 @@ private fun formatElapsed(seconds: Int): String {
     val m = seconds / 60
     val s = seconds % 60
     return "%02d:%02d".format(m, s)
+}
+
+@Composable
+private fun IdleContent() {
+    Column(
+        modifier = Modifier.padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(SurfaceHigh)
+                .border(1.dp, SignalGreen.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text  = "КЛАССИЧЕСКИЙ ФИЛЬТР КАЛМАНА",
+                style = ReadoutStyle.copy(
+                    color         = SignalGreen,
+                    fontWeight    = FontWeight.Bold,
+                    letterSpacing = 2.sp,
+                    fontSize      = 11.sp
+                )
+            )
+            Text(
+                text  = "Адаптивная оценка шума измерений R через инновационную последовательность (Sage-Husa). " +
+                        "Нажмите «Старт» и начните движение.",
+                style = ReadoutStyle.copy(color = TextSecondary, fontSize = 11.sp)
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceHigh)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("Q σ_a", style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary))
+                Text("0.1 м/с²", style = ReadoutStyle.copy(color = PrecisionCyan, fontWeight = FontWeight.Bold))
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceHigh)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("R окно", style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary))
+                Text("40 точек", style = ReadoutStyle.copy(color = RawAmber, fontWeight = FontWeight.Bold))
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SurfaceHigh)
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text("Warm-up", style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary))
+                Text("acc < 15 м", style = ReadoutStyle.copy(color = SignalGreen, fontWeight = FontWeight.Bold))
+            }
+        }
+    }
 }

@@ -227,27 +227,16 @@ class AndroidSensorDataSource(
 
     @SuppressLint("MissingPermission")
     private fun startWithLocationManager() {
-        // Prefer GPS if enabled, otherwise fall back to network provider
-        val gpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
-        val provider = if (gpsEnabled) LocationManager.GPS_PROVIDER
-        else LocationManager.NETWORK_PROVIDER
-
-        if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-            locationManager.requestLocationUpdates(
-                LocationManager.GPS_PROVIDER,
-                0L, 0f,
-                fallbackListener,
-                Looper.getMainLooper()
-            )
+        val provider = when {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+                LocationManager.GPS_PROVIDER
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ->
+                LocationManager.NETWORK_PROVIDER
+            else -> return
         }
-        if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-            locationManager.requestLocationUpdates(
-                LocationManager.NETWORK_PROVIDER,
-                0L, 0f,
-                fallbackListener,
-                Looper.getMainLooper()
-            )
-        }
+        locationManager.requestLocationUpdates(
+            provider, gpsIntervalMs, minDisplacementM, fallbackListener, Looper.getMainLooper()
+        )
     }
 
     override fun stop() {

@@ -60,10 +60,13 @@ class NeuralCoefficientStrategy(
     private val innovBuf = ArrayDeque<DoubleArray>(INNOV_WINDOW)
 
     /** Must be called after each filter step so features stay up-to-date. */
-    fun updateInnovation(innovation: DoubleArray) {
+    fun updateInnovation(innovation: DoubleArray, dtMs: Double = 0.0) {
         if (innovBuf.size >= INNOV_WINDOW) innovBuf.removeFirst()
         innovBuf.addLast(innovation.copyOf())
+        lastDtMs = dtMs
     }
+
+    @Volatile private var lastDtMs: Double = 0.0
 
     // ── CoefficientStrategy implementation ───────────────────────────────────
 
@@ -72,39 +75,36 @@ class NeuralCoefficientStrategy(
         H: Array<DoubleArray>,
         obs: Observation
     ): GainResult {
-        // Not trained yet → delegate entirely to the classical strategy
         if (network == null || innovBuf.size < INNOV_WINDOW) {
             return classicalFallback.computeGain(P_pred, H, obs)
         }
 
-        // ── 1. Measurement noise R — always classical ─────────────────────
-        val clampedAcc = obs.accuracy.coerceIn(minAccuracyM, maxAccuracyM).toDouble()
-        val R = MatrixOps.diagonal(doubleArrayOf(clampedAcc * clampedAcc, clampedAcc * clampedAcc))
-
-        // ── 2. Feature vector ────────────────────────────────────────────────
         val features = buildFeatures(obs, P_pred)
 
-        // ── 3. Neural-network forward pass → K elements ───────────────────────
-        val pred = network.predict(features)
-        val k00 = pred[0].coerceIn(0.001, 0.999)   // x-measurement → x-position
-        val k11 = pred[1].coerceIn(0.001, 0.999)   // y-measurement → y-position
-        val k20 = pred[2].coerceIn(-0.5, 0.5)     // x-measurement → vx
-        val k31 = pred[3].coerceIn(-0.5, 0.5)     // y-measurement → vy
+        // Сеть предсказывает α — масштаб R
+        val alpha = network.predict(features)[0].coerceIn(0.1, 5.0)
 
-        // ── 4. Reconstruct K (4 × 2) ──────────────────────────────────────────
-        val n = P_pred.size   // = 4
-        val m = H.size        // = 2
-        val K = MatrixOps.zeros(n, m)
-        if (n > 0 && m > 0) K[0][0] = k00
-        if (n > 1 && m > 1) K[1][1] = k11
-        if (n > 2 && m > 0) K[2][0] = k20
-        if (n > 3 && m > 1) K[3][1] = k31
+        // R адаптируется, K считается классически — физически корректно
+        val clampedAcc = obs.accuracy.coerceIn(minAccuracyM, maxAccuracyM).toDouble()
+        val baseVariance = clampedAcc * clampedAcc
+        val R = MatrixOps.diagonal(doubleArrayOf(
+            alpha * baseVariance,
+            alpha * baseVariance
+        ))
 
-        // ── 5. Posterior covariance — Joseph stabilised form ─────────────────
-        //   P = (I − K·H)·P_pred·(I − K·H)ᵀ + K·R·Kᵀ
+        // Дальше — стандартный Riccati с новым R
+        val HP   = MatrixOps.mul(H, P_pred)
+        val HPHt = MatrixOps.mul(HP, MatrixOps.transpose(H))
+        val S    = MatrixOps.add(HPHt, R)
+        val Sreg = MatrixOps.addDiagEps(S, eps = 1e-9)
+        val PHt  = MatrixOps.mul(P_pred, MatrixOps.transpose(H))
+        val SInv = MatrixOps.inverse(Sreg)
+        val K    = MatrixOps.mul(PHt, SInv)
+
+        // Joseph form
+        val n = P_pred.size
         val I = MatrixOps.identity(n)
-        val KH = MatrixOps.mul(K, H)
-        val IminusKH = MatrixOps.sub(I, KH)
+        val IminusKH = MatrixOps.sub(I, MatrixOps.mul(K, H))
         val left = MatrixOps.mul(MatrixOps.mul(IminusKH, P_pred), MatrixOps.transpose(IminusKH))
         val KRKt = MatrixOps.mul(MatrixOps.mul(K, R), MatrixOps.transpose(K))
         val P_updated = MatrixOps.symmetrise(MatrixOps.add(left, KRKt))
@@ -143,7 +143,7 @@ class NeuralCoefficientStrategy(
         vec[idx++] = (sigmaPos / MAX_UNCERTAINTY_M).coerceIn(0.0, 1.0)
 
         // dt placeholder — not available here; kept at 0.0 (coordinator sets it via updateInnovation)
-        vec[idx++] = 0.0
+        vec[idx++] = (lastDtMs / MAX_DT_MS).coerceIn(0.0, 1.0)
 
         // Speed
         vec[idx++] = (obs.speed / maxSpeedMs).coerceIn(0.0f, 1.0f).toDouble()
@@ -154,6 +154,7 @@ class NeuralCoefficientStrategy(
     companion object {
         private const val INNOV_WINDOW = TrainingDataCollector.INNOVATION_WINDOW
         private const val MAX_UNCERTAINTY_M = 100.0
+        private const val MAX_DT_MS = 5_000.0
         private val ZERO_INNOV = doubleArrayOf(0.0, 0.0)
     }
 }

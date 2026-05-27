@@ -1,5 +1,6 @@
 package com.katka.engine.coefficient_startegy
 
+import android.util.Log
 import com.katka.engine.MatrixOps
 import com.katka.engine.model.GainResult
 import com.katka.model.Observation
@@ -163,13 +164,22 @@ class ClassicalCoefficientStrategy(
         val S    = MatrixOps.add(HPHt, R)
 
         // Add tiny epsilon for numerical safety before inverting S
-        val Sreg = MatrixOps.addDiagEps(S, eps = 1e-9)
+        val sScale = (S[0][0] + S[1][1]) / 2.0
+        val Sreg = MatrixOps.addDiagEps(S, eps = sScale * 1e-6 + 1e-6)
 
         // 3. Kalman gain  K = P_pred·Hᵀ·S⁻¹ ──────────────────────────────
         val PHt  = MatrixOps.mul(P_pred, MatrixOps.transpose(H))
         val SInv = MatrixOps.inverse(Sreg)
         val K    = MatrixOps.mul(PHt, SInv)
-
+        val kDiagSum = K.indices.sumOf { i -> K.getOrNull(i)?.getOrNull(i) ?: 0.0 }
+        if (kDiagSum.isNaN() || kDiagSum.isInfinite()) {
+            Log.w("ClassicalStrategy", "⚠ K вырожден на шаге, возвращаем P_pred без обновления")
+            return GainResult(
+                K         = MatrixOps.zeros(P_pred.size, H.size),
+                P_updated = P_pred,
+                R         = R  // ← тот же R
+            )
+        }
         // 4. Posterior covariance — Joseph stabilised form ─────────────────
         //
         //   P = (I − K·H)·P_pred·(I − K·H)ᵀ + K·R·Kᵀ

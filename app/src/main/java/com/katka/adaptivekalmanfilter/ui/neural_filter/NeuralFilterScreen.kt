@@ -1,4 +1,4 @@
-package com.katka.adaptivekalmanfilter.ui
+package com.katka.adaptivekalmanfilter.ui.neural_filter
 
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.*
@@ -12,14 +12,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.katka.adaptivekalmanfilter.design_system.*
 import com.katka.adaptivekalmanfilter.model.*
-import kotlin.math.roundToInt
 
 // Акцентный цвет нейросетевого режима
 private val NeuralAccent = Color(0xFF00E5FF)

@@ -1,5 +1,8 @@
-package com.katka.adaptivekalmanfilter.ui
+package com.katka.adaptivekalmanfilter.ui.menu_screen
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -23,19 +26,20 @@ import com.katka.adaptivekalmanfilter.design_system.*
 import com.katka.adaptivekalmanfilter.model.FilterUiState
 import kotlin.math.sin
 
-// Дополнительный цвет для нейросетевого режима — если нет в design_system, добавь туда
-private val NeuralCyan = Color(0xFF00E5FF)
+private val NeuralCyan    = Color(0xFF00E5FF)
+private val CompareYellow = Color(0xFFFFD600)
 
 @Composable
 fun MenuScreen(
-    uiState: FilterUiState,
+    uiState: MenuUiState,
     onStartClassicalSession: () -> Unit,
     onStartNeuralSession: () -> Unit,
+    onStartComparison: () -> Unit,
     onPermissionGranted: () -> Unit,
     onPermissionDenied: () -> Unit
 ) {
     val permLauncher = rememberPermissionLauncher(onPermissionGranted, onPermissionDenied)
-    val needsPerm    = uiState is FilterUiState.NeedsPermission
+    val needsPerm    = !uiState.isPermissionGranted
 
     Box(
         modifier = Modifier.fillMaxSize().background(Background),
@@ -45,7 +49,7 @@ fun MenuScreen(
 
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
             modifier = Modifier.padding(horizontal = 32.dp)
         ) {
             // ── Заголовок ─────────────────────────────────────────────────────
@@ -81,7 +85,7 @@ fun MenuScreen(
                 InfoTile("РЕЖИМЫ",    "KF + NN",    Modifier.weight(1f))
             }
 
-            // ── Баннер разрешения ──────────────────────────────────────────────
+            // ── Баннер разрешения ─────────────────────────────────────────────
             if (needsPerm) PermissionBanner()
 
             // ── Кнопка: Классический фильтр ───────────────────────────────────
@@ -91,11 +95,8 @@ fun MenuScreen(
                 accentColor = SignalGreen,
                 isPrimary   = true,
                 onClick = {
-                    if (needsPerm) {
-                        permLauncher.launch(locationPermissions)
-                    } else {
-                        onStartClassicalSession()
-                    }
+                    if (needsPerm) permLauncher.launch(locationPermissions)
+                    else onStartClassicalSession()
                 }
             )
 
@@ -106,16 +107,26 @@ fun MenuScreen(
                 accentColor = NeuralCyan,
                 isPrimary   = false,
                 onClick = {
-                    if (needsPerm) {
-                        permLauncher.launch(locationPermissions)
-                    } else {
-                        onStartNeuralSession()
-                    }
+                    if (needsPerm) permLauncher.launch(locationPermissions)
+                    else onStartNeuralSession()
                 },
                 enabled = !needsPerm
             )
 
-            // ── Карточка алгоритмов ────────────────────────────────────────────
+            // ── Кнопка: Сравнение фильтров ────────────────────────────────────
+            FilterModeButton(
+                label       = "СРАВНЕНИЕ ФИЛЬТРОВ",
+                description = "Параллельный запуск · экспорт CSV",
+                accentColor = CompareYellow,
+                isPrimary   = false,
+                onClick = {
+                    if (needsPerm) permLauncher.launch(locationPermissions)
+                    else onStartComparison()
+                },
+                enabled = !needsPerm
+            )
+
+            // ── Карточка алгоритмов ───────────────────────────────────────────
             AlgorithmCard()
         }
     }
@@ -134,8 +145,8 @@ private fun FilterModeButton(
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pulse_$label")
     val pulse by infiniteTransition.animateFloat(
-        initialValue = if (isPrimary) 0.5f else 0.2f,
-        targetValue  = if (isPrimary) 1.0f else 0.5f,
+        initialValue  = if (isPrimary) 0.5f else 0.2f,
+        targetValue   = if (isPrimary) 1.0f else 0.5f,
         animationSpec = infiniteRepeatable(
             animation  = tween(1200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
@@ -144,7 +155,6 @@ private fun FilterModeButton(
 
     Column(modifier = Modifier.fillMaxWidth()) {
         Box(contentAlignment = Alignment.Center) {
-            // Свечение по контуру
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -160,9 +170,8 @@ private fun FilterModeButton(
                     .height(if (isPrimary) 56.dp else 50.dp),
                 shape  = RoundedCornerShape(4.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isPrimary) SignalDim
-                    else accentColor.copy(alpha = 0.08f),
-                    contentColor   = accentColor,
+                    containerColor         = if (isPrimary) SignalDim else accentColor.copy(alpha = 0.08f),
+                    contentColor           = accentColor,
                     disabledContainerColor = SurfaceHigh,
                     disabledContentColor   = TextSecondary
                 )
@@ -178,14 +187,12 @@ private fun FilterModeButton(
                 )
             }
         }
-
         if (enabled) {
             Spacer(Modifier.height(4.dp))
             Text(
                 text     = description,
                 style    = ReadoutStyle.copy(
-                    fontSize = 10.sp, color = accentColor.copy(alpha = 0.5f),
-                    letterSpacing = 1.sp
+                    fontSize = 10.sp, color = accentColor.copy(alpha = 0.5f), letterSpacing = 1.sp
                 ),
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             )
@@ -197,17 +204,17 @@ private fun FilterModeButton(
 private fun rememberPermissionLauncher(
     onGranted: () -> Unit,
     onDenied:  () -> Unit
-) = androidx.activity.compose.rememberLauncherForActivityResult(
-    androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()
+) = rememberLauncherForActivityResult(
+    ActivityResultContracts.RequestMultiplePermissions()
 ) { results ->
-    val granted = results[android.Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            results[android.Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    val granted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
     if (granted) onGranted() else onDenied()
 }
 
 private val locationPermissions = arrayOf(
-    android.Manifest.permission.ACCESS_FINE_LOCATION,
-    android.Manifest.permission.ACCESS_COARSE_LOCATION
+    Manifest.permission.ACCESS_FINE_LOCATION,
+    Manifest.permission.ACCESS_COARSE_LOCATION
 )
 
 @Composable
@@ -229,7 +236,7 @@ private fun OscilloscopeBackground() {
         fun sinPath(baseY: Float, freq: Float, phaseOff: Float): Path {
             val path = Path(); var first = true
             for (px in 0..w.toInt() step 4) {
-                val t = px / w
+                val t  = px / w
                 val py = baseY + h * 0.05f * sin((t * 6.28f * freq + phaseOff + phase).toDouble()).toFloat()
                 if (first) { path.moveTo(px.toFloat(), py); first = false } else path.lineTo(px.toFloat(), py)
             }
@@ -291,9 +298,12 @@ private fun AlgorithmCard() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("АЛГОРИТМЫ", style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary, letterSpacing = 4.sp))
-        FormulaRow("K",  "P·Hᵀ·(H·P·Hᵀ + R)⁻¹", SignalGreen)
-        FormulaRow("K*", "MLP(инновации, acc, dt)", NeuralCyan)
+        Text(
+            "АЛГОРИТМЫ",
+            style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary, letterSpacing = 4.sp)
+        )
+        FormulaRow("K",  "P·Hᵀ·(H·P·Hᵀ + R)⁻¹",       SignalGreen)
+        FormulaRow("K*", "MLP(инновации, acc, dt)",       NeuralCyan)
         FormulaRow("x̂",  "x̂_pred + K·(z − H·x̂_pred)", TextMono)
     }
 }

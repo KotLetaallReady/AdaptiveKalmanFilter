@@ -107,7 +107,9 @@ object MatrixOps {
             val tmp = aug[col]; aug[col] = aug[maxRow]; aug[maxRow] = tmp
 
             val pivot = aug[col][col]
-            check(abs(pivot) > 1e-14) { "inverse: matrix is singular (pivot ≈ 0 at col=$col)" }
+            if (abs(pivot) < 1e-10) {
+                aug[col][col] += 1e-6
+            }
 
             // Normalise pivot row
             for (j in 0 until 2 * n) aug[col][j] /= pivot

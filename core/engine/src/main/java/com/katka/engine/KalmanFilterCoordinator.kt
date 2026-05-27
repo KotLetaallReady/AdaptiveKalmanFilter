@@ -26,7 +26,7 @@ private const val LOG_EVERY_N_STEPS      = 1      // логировать каж
 
 class KalmanFilterCoordinator(
     private val sensorSource: SensorDataSource,
-    private val filter: KalmanFilter,
+    val filter: KalmanFilter,
     private val strategy: CoefficientStrategy,
     private val scope: CoroutineScope,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
@@ -35,18 +35,18 @@ class KalmanFilterCoordinator(
     private val resultHistory = mutableListOf<FilterResult>()
     private val rawGpsHistory = mutableListOf<Pair<Double, Double>>()
 
+    // ── ДОБАВИТЬ: счётчик тёплых фиксов ──────────────────────────────────────
+    private var consecutiveGoodFixes = 0
+
     private val H: Array<DoubleArray> = arrayOf(
         doubleArrayOf(1.0, 0.0, 0.0, 0.0),
         doubleArrayOf(0.0, 1.0, 0.0, 0.0)
     )
 
-    // ── Счётчики для статистики ───────────────────────────────────────────────
     private var stepCount        = 0
     private var warningCount     = 0
     private var sessionStartMs   = 0L
     private var lastObsTimestamp = 0L
-
-    // ── Public results flow ───────────────────────────────────────────────────
 
     val results: Flow<FilterResult> = flow {
         sensorSource.observations.collect { obs ->
@@ -62,16 +62,15 @@ class KalmanFilterCoordinator(
             replay  = 1
         )
 
-    // ── Session control ───────────────────────────────────────────────────────
-
     fun start() {
         filter.reset(strategy)
         resultHistory.clear()
         rawGpsHistory.clear()
-        stepCount      = 0
-        warningCount   = 0
-        sessionStartMs = System.currentTimeMillis()
-        lastObsTimestamp = 0L
+        stepCount             = 0
+        warningCount          = 0
+        sessionStartMs        = System.currentTimeMillis()
+        lastObsTimestamp      = 0L
+        consecutiveGoodFixes  = 0  // ДОБАВИТЬ
 
         Log.i(TAG, buildString {
             appendLine("╔══════════════════════════════════════════════════╗")
@@ -103,8 +102,6 @@ class KalmanFilterCoordinator(
             appendLine("╚══════════════════════════════════════════════════╝")
         })
     }
-
-    // ── Metrics ───────────────────────────────────────────────────────────────
 
     fun computeMetrics(): AccuracyMetrics {
         if (resultHistory.size < 2 || rawGpsHistory.size < 2) return AccuracyMetrics.EMPTY
@@ -141,30 +138,56 @@ class KalmanFilterCoordinator(
         return AccuracyMetrics(rmse, mae, maxError, lag = 0.0, stability = stability, sampleCount = n)
     }
 
-    fun getHistory(): List<FilterResult>           = resultHistory.toList()
+    fun getHistory(): List<FilterResult>               = resultHistory.toList()
     fun getRawGpsHistory(): List<Pair<Double, Double>> = rawGpsHistory.toList()
-
-    // ── Private ───────────────────────────────────────────────────────────────
 
     private fun processObservation(obs: Observation): FilterResult? {
         return try {
-            val isFirstObs   = !filter.isInitialised
-            val nowMs        = System.currentTimeMillis()
-            val gapMs        = if (lastObsTimestamp > 0) nowMs - lastObsTimestamp else 0L
-            lastObsTimestamp = nowMs
+            // ── Дедупликация по GPS-метке ─────────────────────────────────────
+            if (obs.timestamp > 0L && obs.timestamp == lastObsTimestamp) {
+                Log.d(TAG, "⏭ Дубликат obs.timestamp=${obs.timestamp}, пропускаем")
+                return null
+            }
+
+            // ── GPS warm-up guard ─────────────────────────────────────────────
+            if (!filter.isInitialised) {
+                if (obs.accuracy > GPS_WARMUP_MAX_ACCURACY_M) {
+                    consecutiveGoodFixes = 0
+                    Log.d(TAG, "⏳ Warm-up: пропуск фикса acc=${obs.accuracy}м > ${GPS_WARMUP_MAX_ACCURACY_M}м")
+                    return null
+                }
+                consecutiveGoodFixes++
+                if (consecutiveGoodFixes < GPS_WARMUP_MIN_GOOD_FIXES) {
+                    Log.d(TAG, "⏳ Warm-up: ожидание стабильного GPS ($consecutiveGoodFixes/${GPS_WARMUP_MIN_GOOD_FIXES})")
+                    return null
+                }
+                Log.i(TAG, "✅ GPS стабилен, acc=${obs.accuracy}м — инициализируем фильтр")
+            }
+
+            val isFirstObs = !filter.isInitialised
+
+            // ── dt считаем по GPS-метке, не по системным часам ───────────────
+            val gapMs = if (lastObsTimestamp > 0L)
+                (obs.timestamp - lastObsTimestamp).coerceAtLeast(0L)
+            else 0L
+
+            // ── Пропускаем нулевой dt после инициализации ────────────────────
+            if (gapMs == 0L && filter.isInitialised) {
+                Log.d(TAG, "⏭ dt=0 после инициализации, пропускаем шаг")
+                return null
+            }
+
+            lastObsTimestamp = obs.timestamp
             stepCount++
 
-            // ── 1. Логируем входящий GPS-фикс ────────────────────────────────
             logIncomingObservation(obs, isFirstObs, gapMs)
 
-            // ── 2. Запускаем фильтр ───────────────────────────────────────────
             val result = filter.process(obs, strategy)
 
-            // ── 3. Сырой GPS в локальных координатах ─────────────────────────
             val (rawX, rawY) = filter.geoToLocal(obs.latitude, obs.longitude)
             rawGpsHistory.add(rawX to rawY)
 
-            // ── 4. Обновляем адаптивный R ─────────────────────────────────────
+            // Адаптивное обновление R только на реальных шагах (не на первом)
             if (strategy is ClassicalCoefficientStrategy && !isFirstObs) {
                 strategy.updateInnovation(
                     innovation = result.innovation,
@@ -173,12 +196,10 @@ class KalmanFilterCoordinator(
                 )
             }
 
-            // ── 5. Логируем результат фильтра ─────────────────────────────────
             if (stepCount % LOG_EVERY_N_STEPS == 0) {
                 logFilterResult(result, rawX, rawY, gapMs)
             }
 
-            // ── 6. Проверяем аномалии ─────────────────────────────────────────
             checkAnomalies(result, gapMs)
 
             result
@@ -187,9 +208,7 @@ class KalmanFilterCoordinator(
             null
         }
     }
-
-    // ── Логирование входящего наблюдения ─────────────────────────────────────
-
+    
     private fun logIncomingObservation(obs: Observation, isFirst: Boolean, gapMs: Long) {
         if (isFirst) {
             Log.i(TAG, buildString {
@@ -204,7 +223,6 @@ class KalmanFilterCoordinator(
             return
         }
 
-        // Обычный шаг — компактный лог
         Log.d(TAG, buildString {
             append("[#$stepCount]")
             append("  GPS(${obs.provider})")
@@ -215,8 +233,6 @@ class KalmanFilterCoordinator(
             if (obs.hasSpeed) append("  spd=${"%.2f".format(obs.speed)}м/с")
         })
     }
-
-    // ── Логирование результата одного шага фильтра ────────────────────────────
 
     private fun logFilterResult(result: FilterResult, rawX: Double, rawY: Double, gapMs: Long) {
         val K    = result.kalmanGain
@@ -229,7 +245,6 @@ class KalmanFilterCoordinator(
         val innovMag = if (innov.size >= 2)
             kotlin.math.sqrt(innov[0] * innov[0] + innov[1] * innov[1]) else 0.0
 
-        // Смещение фильтра от сырого GPS
         val dx = result.state.x - rawX
         val dy = result.state.y - rawY
         val filterOffset = kotlin.math.sqrt(dx * dx + dy * dy)
@@ -264,8 +279,6 @@ class KalmanFilterCoordinator(
         })
     }
 
-    // ── Проверка аномалий с предупреждениями ──────────────────────────────────
-
     private fun checkAnomalies(result: FilterResult, gapMs: Long) {
         val K   = result.kalmanGain
         val kx  = K.getOrNull(0)?.getOrNull(0) ?: 0.0
@@ -274,43 +287,32 @@ class KalmanFilterCoordinator(
         val innovMag = if (innov.size >= 2)
             kotlin.math.sqrt(innov[0] * innov[0] + innov[1] * innov[1]) else 0.0
 
-        // Инновация слишком большая — возможен GPS-прыжок
         if (innovMag > WARN_INNOVATION_M) {
             warningCount++
             Log.w(TAG, "⚠️  [#$stepCount] Большая инновация: ${"%.2f".format(innovMag)} м " +
                     "(порог: $WARN_INNOVATION_M м) — возможен GPS-прыжок или потеря сигнала")
         }
-
-        // Неопределённость растёт — фильтр расходится
         if (result.state.positionUncertaintyMeters > WARN_UNCERTAINTY_M) {
             warningCount++
             Log.w(TAG, "⚠️  [#$stepCount] Высокая неопределённость: " +
                     "${"%.1f".format(result.state.positionUncertaintyMeters)} м — фильтр расходится?")
         }
-
-        // K слишком высокий — фильтр почти не сглаживает
         if (kx > WARN_KALMAN_GAIN_HIGH || ky > WARN_KALMAN_GAIN_HIGH) {
             warningCount++
             Log.w(TAG, "⚠️  [#$stepCount] Высокий K: kx=${"%.4f".format(kx)}, ky=${"%.4f".format(ky)} " +
                     "— фильтр почти не сглаживает (R >> P?)")
         }
-
-        // K слишком низкий — фильтр игнорирует GPS
         if (kx < WARN_KALMAN_GAIN_LOW && kx > 0.0) {
             warningCount++
             Log.w(TAG, "⚠️  [#$stepCount] Низкий K: kx=${"%.6f".format(kx)} " +
                     "— фильтр игнорирует GPS (R << P?)")
         }
-
-        // Большой пропуск между фиксами
         if (gapMs > WARN_DT_SPIKE_MS) {
             warningCount++
             Log.w(TAG, "⚠️  [#$stepCount] Большой пропуск между фиксами: ${gapMs} мс " +
                     "— нет GPS-сигнала? Телефон усыплён?")
         }
     }
-
-    // ── Вспомогательные метки качества ───────────────────────────────────────
 
     private fun gainQuality(k: Double): String = when {
         k > WARN_KALMAN_GAIN_HIGH -> "⚠ ВЫСОКИЙ"
@@ -324,5 +326,18 @@ class KalmanFilterCoordinator(
         mag < 5.0  -> "~ умеренно"
         mag < 10.0 -> "⚠ высокая"
         else       -> "❌ аномалия"
+    }
+
+    companion object {
+        private const val TAG = "KalmanLog"
+        private const val WARN_INNOVATION_M      = 10.0
+        private const val WARN_UNCERTAINTY_M     = 50.0
+        private const val WARN_KALMAN_GAIN_HIGH  = 0.95
+        private const val WARN_KALMAN_GAIN_LOW   = 0.001
+        private const val WARN_DT_SPIKE_MS       = 5000.0
+        private const val LOG_EVERY_N_STEPS      = 1
+        // ДОБАВИТЬ:
+        private const val GPS_WARMUP_MAX_ACCURACY_M = 15f
+        private const val GPS_WARMUP_MIN_GOOD_FIXES = 3
     }
 }

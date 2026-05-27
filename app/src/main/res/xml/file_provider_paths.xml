@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Пути которые FileProvider имеет право шарить через Uri.
+    external-path покрывает Environment.DIRECTORY_DOWNLOADS —
+    именно туда CsvExporter пишет файл на Android 9 и ниже.
+-->
+<paths>
+    <external-path
+        name="external_downloads"
+        path="." />
+</paths>
