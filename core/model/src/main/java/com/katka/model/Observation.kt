@@ -22,26 +22,21 @@ package com.katka.model
  *                            The filter uses IMU as a control input u only when true.
  */
 data class Observation(
-    /** Unix epoch time in milliseconds. */
     val timestamp: Long,
-
-    // GPS
     val latitude: Double,
     val longitude: Double,
-    /** 1-σ horizontal accuracy radius (metres). Used to derive R. */
     val accuracy: Float,
-    val altitude: Double = 0.0,
-    val speed: Float = 0f,
-    val bearing: Float = 0f,
-    val hasSpeed: Boolean = false,
-    val hasBearing: Boolean = false,
-
-    // IMU (Sensor.TYPE_LINEAR_ACCELERATION)
-    val ax: Double = 0.0,
-    val ay: Double = 0.0,
-    val az: Double = 0.0,
-    val hasImu: Boolean = false,
-
-    /** Provider that delivered the GPS fix ("gps", "fused", etc.). */
-    val provider: String = "unknown"
+    val altitude: Double,
+    val speed: Float,
+    val bearing: Float,
+    val hasSpeed: Boolean,
+    val hasBearing: Boolean,
+    val ax: Double,
+    val ay: Double,
+    val az: Double,
+    val axGeo: Double = 0.0,
+    val ayGeo: Double = 0.0,
+    val hasImu: Boolean,
+    val hasRotation: Boolean = false,
+    val provider: String
 )

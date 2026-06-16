@@ -1,22 +1,27 @@
 package com.katka.engine.neural
 
+import kotlin.math.exp
 import kotlin.math.sqrt
 import kotlin.random.Random
 
 /**
  * Compact feedforward MLP — pure Kotlin, no external ML library.
  *
- * Architecture:
- *   input (24) → hidden ReLU layers → output (4, linear)
+ * Architecture (trajectory-smoother task, diploma §3.3):
+ *   input (6 context features) → hidden ReLU layers (8, 4) → output (1, sigmoid)
  *
- * Output: [K[0,0], K[1,1], K[2,0], K[3,1]] — the four dominant
- * Kalman-gain elements for a 4-state / 2-measurement filter.
+ * Output: the trust weight α ∈ (0,1) blending the Kalman point and its
+ * Savitzky–Golay approximation.  A sigmoid output keeps α in range and starts
+ * near 0.5 (zero biases, small weights) — the natural "undecided" prior.
+ *
+ * The topology and output activation are configurable via [NetworkConfig], so
+ * the same class also supports a plain linear-regression head if needed.
  *
  * Weights are stored row-major:
  *   weights[l][i][j] = connection from neuron j in layer l
  *                       to neuron i in layer l+1.
  *
- * @param config  Describes the layer sizes.
+ * @param config  Describes the layer sizes and the output activation.
  * @param seed    RNG seed for reproducible weight initialisation.
  */
 class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
@@ -58,7 +63,7 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
             act = DoubleArray(W.size) { i ->
                 var s = b[i]
                 for (j in act.indices) s += W[i][j] * act[j]
-                if (isLast) s else relu(s)   // linear output, ReLU hidden
+                if (isLast) outputActivate(s) else relu(s)   // configurable output, ReLU hidden
             }
         }
         return act
@@ -86,7 +91,7 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
                 s
             }
             preActs[l] = pre
-            acts[l + 1] = DoubleArray(pre.size) { if (isLast) pre[it] else relu(pre[it]) }
+            acts[l + 1] = DoubleArray(pre.size) { if (isLast) outputActivate(pre[it]) else relu(pre[it]) }
         }
 
         @Suppress("UNCHECKED_CAST")
@@ -99,6 +104,12 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
     // ── Activations ───────────────────────────────────────────────────────────
 
     private fun relu(x: Double) = if (x > 0.0) x else 0.0
+
+    /** Output-layer activation, selected by [NetworkConfig.outputActivation]. */
+    private fun outputActivate(x: Double): Double = when (config.outputActivation) {
+        OutputActivation.LINEAR -> x
+        OutputActivation.SIGMOID -> 1.0 / (1.0 + exp(-x))
+    }
 
     // ── Data classes ──────────────────────────────────────────────────────────
 
@@ -114,32 +125,47 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
     )
 }
 
+// ── Output activation ─────────────────────────────────────────────────────────
+
+/** Activation applied to the output layer (hidden layers are always ReLU). */
+enum class OutputActivation {
+    /** Identity — for unbounded regression targets. */
+    LINEAR,
+    /** σ(z) = 1/(1+e⁻ᶻ) — for targets bounded to (0,1), e.g. the trust weight α. */
+    SIGMOID
+}
+
 // ── NetworkConfig ─────────────────────────────────────────────────────────────
 
 /**
  * Immutable descriptor for the MLP topology.
  *
- * @param inputSize    Number of input features (must equal
- *                     [TrainingDataCollector.FEATURE_SIZE]).
- * @param hiddenSizes  Sizes of each hidden layer (e.g. [32, 16]).
- * @param outputSize   Number of output neurons (must equal
- *                     [TrainingDataCollector.LABEL_SIZE]).
+ * @param inputSize        Number of input features.
+ * @param hiddenSizes      Sizes of each hidden layer (e.g. [8, 4]).
+ * @param outputSize       Number of output neurons.
+ * @param outputActivation Activation on the output layer (default SIGMOID for α).
  */
 data class NetworkConfig(
     val inputSize: Int,
     val hiddenSizes: List<Int>,
-    val outputSize: Int
+    val outputSize: Int,
+    val outputActivation: OutputActivation = OutputActivation.SIGMOID
 ) {
     /** Flat array of all layer sizes: [input, h1, h2, …, output]. */
     val allSizes: IntArray
         get() = (listOf(inputSize) + hiddenSizes + listOf(outputSize)).toIntArray()
 
     companion object {
-        /** Default topology that works well for the 24-feature Kalman task. */
+        /**
+         * Default smoother topology (diploma §3.3): 6 → 8 → 4 → 1, sigmoid output.
+         * Input size = number of context features (see SmootherFeatures.COUNT);
+         * output = the single trust weight α.
+         */
         fun default() = NetworkConfig(
-            inputSize = TrainingDataCollector.FEATURE_SIZE,
-            hiddenSizes = listOf(32, 16),
-            outputSize = TrainingDataCollector.LABEL_SIZE
+            inputSize = 6,
+            hiddenSizes = listOf(8, 4),
+            outputSize = 1,
+            outputActivation = OutputActivation.SIGMOID
         )
     }
 }

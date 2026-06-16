@@ -299,7 +299,6 @@ class KalmanFilter(
         val dt4 = dt3 * dt
         val halfDt2 = 0.5 * dt2
 
-        // F
         val F = arrayOf(
             doubleArrayOf(1.0, 0.0, dt,  0.0),
             doubleArrayOf(0.0, 1.0, 0.0, dt ),
@@ -307,7 +306,6 @@ class KalmanFilter(
             doubleArrayOf(0.0, 0.0, 0.0, 1.0)
         )
 
-        // B
         val B = arrayOf(
             doubleArrayOf(halfDt2, 0.0    ),
             doubleArrayOf(0.0,     halfDt2),
@@ -315,15 +313,16 @@ class KalmanFilter(
             doubleArrayOf(0.0,     dt     )
         )
 
-        // u — acceleration control input (zero if no IMU)
-        val u = doubleArrayOf(0.0, 0.0)
 
-        // x̂_pred = F·x + B·u
+        val u = if (obs.hasImu && obs.hasRotation)
+            doubleArrayOf(obs.axGeo, obs.ayGeo)
+        else
+            doubleArrayOf(0.0, 0.0)
+
         val Fx  = MatrixOps.mulVec(F, s.toVector())
         val Bu  = MatrixOps.mulVec(B, u)
         val xPredVec = DoubleArray(KalmanState.DIM) { i -> Fx[i] + Bu[i] }
 
-        // Q (continuous white-noise acceleration model)
         val q = processNoiseStd * processNoiseStd
         val Q = arrayOf(
             doubleArrayOf(q * dt4 / 4, 0.0,        q * dt3 / 2, 0.0       ),
@@ -332,7 +331,6 @@ class KalmanFilter(
             doubleArrayOf(0.0,         q * dt3 / 2, 0.0,        q * dt2   )
         )
 
-        // P_pred = F·P·Fᵀ + Q
         val FP    = MatrixOps.mul(F, s.P)
         val FPFt  = MatrixOps.mul(FP, MatrixOps.transpose(F))
         val PPred = MatrixOps.symmetrise(MatrixOps.add(FPFt, Q))

@@ -1,4 +1,4 @@
-package core.engine
+package com.katka.engine
 
 import android.util.Log
 import com.katka.data.SensorDataSource
@@ -70,7 +70,7 @@ class KalmanFilterCoordinator(
         warningCount          = 0
         sessionStartMs        = System.currentTimeMillis()
         lastObsTimestamp      = 0L
-        consecutiveGoodFixes  = 0  // ДОБАВИТЬ
+        consecutiveGoodFixes  = 0
 
         Log.i(TAG, buildString {
             appendLine("╔══════════════════════════════════════════════════╗")
@@ -143,13 +143,11 @@ class KalmanFilterCoordinator(
 
     private fun processObservation(obs: Observation): FilterResult? {
         return try {
-            // ── Дедупликация по GPS-метке ─────────────────────────────────────
             if (obs.timestamp > 0L && obs.timestamp == lastObsTimestamp) {
                 Log.d(TAG, "⏭ Дубликат obs.timestamp=${obs.timestamp}, пропускаем")
                 return null
             }
 
-            // ── GPS warm-up guard ─────────────────────────────────────────────
             if (!filter.isInitialised) {
                 if (obs.accuracy > GPS_WARMUP_MAX_ACCURACY_M) {
                     consecutiveGoodFixes = 0
@@ -166,12 +164,10 @@ class KalmanFilterCoordinator(
 
             val isFirstObs = !filter.isInitialised
 
-            // ── dt считаем по GPS-метке, не по системным часам ───────────────
             val gapMs = if (lastObsTimestamp > 0L)
                 (obs.timestamp - lastObsTimestamp).coerceAtLeast(0L)
             else 0L
 
-            // ── Пропускаем нулевой dt после инициализации ────────────────────
             if (gapMs == 0L && filter.isInitialised) {
                 Log.d(TAG, "⏭ dt=0 после инициализации, пропускаем шаг")
                 return null
@@ -187,8 +183,10 @@ class KalmanFilterCoordinator(
             val (rawX, rawY) = filter.geoToLocal(obs.latitude, obs.longitude)
             rawGpsHistory.add(rawX to rawY)
 
-            // Адаптивное обновление R только на реальных шагах (не на первом)
-            if (strategy is ClassicalCoefficientStrategy && !isFirstObs) {
+            if (!isFirstObs && strategy is ClassicalCoefficientStrategy) {
+                // Feed the innovation back to the adaptive-R (Sage-Husa) estimator.
+                // The neural smoother is a separate post-filter stage and needs
+                // nothing from the coordinator here.
                 strategy.updateInnovation(
                     innovation = result.innovation,
                     H          = H,
@@ -336,8 +334,7 @@ class KalmanFilterCoordinator(
         private const val WARN_KALMAN_GAIN_LOW   = 0.001
         private const val WARN_DT_SPIKE_MS       = 5000.0
         private const val LOG_EVERY_N_STEPS      = 1
-        // ДОБАВИТЬ:
         private const val GPS_WARMUP_MAX_ACCURACY_M = 15f
-        private const val GPS_WARMUP_MIN_GOOD_FIXES = 3
+        private const val GPS_WARMUP_MIN_GOOD_FIXES = 5
     }
 }

@@ -38,8 +38,8 @@ sealed class NeuralFilterUiState {
         val trackPoints: List<TrackPoint>,
         val rawPoints: List<TrackPoint>,
         val elapsedSeconds: Int,
-        /** false → сеть ещё не прогрела буфер инноваций, идёт классический fallback */
-        val isUsingNeuralGain: Boolean = true
+        /** false → окно сглаживателя ещё не заполнено (первые ~L шагов), сглаживание не идёт */
+        val isSmoothing: Boolean = true
     ) : NeuralFilterUiState()
 
     /** Сессия завершена */

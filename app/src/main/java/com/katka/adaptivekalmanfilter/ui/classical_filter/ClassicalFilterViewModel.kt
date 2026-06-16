@@ -9,10 +9,10 @@ import com.katka.adaptivekalmanfilter.model.MetricsUiModel
 import com.katka.adaptivekalmanfilter.model.TrackPoint
 import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
 import com.katka.engine.KalmanFilter
+import com.katka.engine.KalmanFilterCoordinator
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
 import com.katka.engine.model.FilterResult
 import com.katka.model.AccuracyMetrics
-import core.engine.KalmanFilterCoordinator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import jakarta.inject.Inject

@@ -105,7 +105,7 @@ private fun NeuralHeader(uiState: NeuralFilterUiState) {
                 style = ReadoutStyle.copy(color = NeuralAccent, letterSpacing = 4.sp, fontSize = 10.sp)
             )
             Text(
-                text  = "MLP · offline training · K-inference",
+                text  = "MLP · сглаживатель Савицкого-Голея · α",
                 style = ReadoutStyle.copy(color = TextSecondary, fontSize = 11.sp)
             )
         }
@@ -149,32 +149,33 @@ private fun OnboardingContent() {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         NeuralInfoCard(
-            title = "КАК РАБОТАЕТ НЕЙРОСЕТЕВОЙ РЕЖИМ",
-            content = "Нейросеть заменяет формулу Риккати при вычислении коэффициента K. " +
-                    "Она обучается воспроизводить решения классического фильтра, " +
-                    "но при этом запоминает паттерны шума вашего конкретного устройства."
+            title = "КАК РАБОТАЕТ НЕЙРОСГЛАЖИВАТЕЛЬ",
+            content = "Поверх классического фильтра Калмана работает нейросетевой сглаживатель " +
+                    "с фиксированной задержкой. По окну из 11 точек он предсказывает коэффициент " +
+                    "доверия α между точкой фильтра и аппроксимацией Савицкого-Голея: " +
+                    "x = (1−α)·x_Калман + α·x_Савицкий-Голей."
         )
 
         OnboardingStep(
             number = "1",
             title  = "Сбор данных",
-            body   = "Запустите сбор данных и пройдите маршрут. Классический фильтр параллельно " +
-                    "записывает обучающие пары: (наблюдение → коэффициент K).",
+            body   = "Запустите сбор данных и пройдите маршрут. Для каждого окна вычисляется " +
+                    "оптимальный α* (по аппроксимации сырого GPS) — обучающая метка.",
             color  = RawAmber
         )
         OnboardingStep(
             number = "2",
             title  = "Обучение",
-            body   = "После сбора ≥ ${NeuralFilterUiState.MIN_SAMPLES} точек нейросеть " +
+            body   = "После сбора ≥ ${NeuralFilterUiState.MIN_SAMPLES} окон нейросеть " +
                     "обучается за ${NeuralFilterUiState.TRAINING_EPOCHS} эпох на вашем устройстве. " +
-                    "Веса сохраняются на диск.",
+                    "Веса и нормализация признаков сохраняются на диск.",
             color  = NeuralAccent
         )
         OnboardingStep(
             number = "3",
             title  = "Использование",
-            body   = "Запустите нейросетевую сессию. Фильтр работает в реальном времени, " +
-                    "K вычисляется нейросетью (<0.5 мс на шаг).",
+            body   = "Запустите сессию. Сглаживатель в реальном времени строит сглаженный трек " +
+                    "с задержкой в 5 точек; α предсказывается нейросетью.",
             color  = SignalGreen
         )
     }
@@ -325,7 +326,7 @@ private fun TrainingContent(state: NeuralFilterUiState.Training) {
 
         NeuralInfoCard(
             title   = "Adam · lr=1e-3 · batch=32",
-            content = "Нейросеть 24→32→16→4 обучается на ${state.totalEpochs} эпох. " +
+            content = "Нейросеть 6→8→4→1 (сигмоида) обучается на ${state.totalEpochs} эпох. " +
                     "Веса сохранятся на диск после завершения."
         )
     }
@@ -420,16 +421,16 @@ private fun ReadyContent() {
                 Text("НЕЙРОСЕТЬ ОБУЧЕНА", style = ReadoutStyle.copy(
                     color = SignalGreen, fontWeight = FontWeight.Bold, letterSpacing = 3.sp
                 ))
-                Text("Архитектура: 24 → 32 → 16 → 4",
+                Text("Архитектура: 6 → 8 → 4 → 1",
                     style = ReadoutStyle.copy(color = TextSecondary, fontSize = 11.sp))
             }
         }
 
         NeuralInfoCard(
             title   = "ГОТОВО К ЗАПУСКУ",
-            content = "Нажмите «Запустить нейросеть» для начала сессии. " +
-                    "K будет вычисляться нейросетью. Пока буфер инноваций не заполнится " +
-                    "(первые ~10 шагов), автоматически используется классический fallback."
+            content = "Нажмите «Запустить нейросеть» для начала сессии. Сглаживатель строит " +
+                    "сглаженный трек с задержкой в 5 точек. Пока окно из 11 точек не заполнится " +
+                    "(первые ~11 шагов), сглаженные точки ещё не выводятся."
         )
     }
 }
@@ -440,14 +441,14 @@ private fun RunningContent(state: NeuralFilterUiState.Running) {
         modifier = Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Бейдж нейросетевого режима
-        NeuralModeBadge(state.isUsingNeuralGain)
+        // Бейдж режима сглаживания
+        NeuralModeBadge(state.isSmoothing)
 
         // Трек
         NeuralTrackCanvas(state.trackPoints, state.rawPoints)
 
-        // Показания
-        SectionLabel("ВЕКТОР СОСТОЯНИЯ")
+        // Показания (сглаженная центральная точка)
+        SectionLabel("СГЛАЖЕННАЯ ТОЧКА")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DataCell("Lat", "%.6f°".format(state.readout.filteredLat), SignalGreen, Modifier.weight(1f))
             DataCell("Lon", "%.6f°".format(state.readout.filteredLon), SignalGreen, Modifier.weight(1f))
@@ -457,14 +458,13 @@ private fun RunningContent(state: NeuralFilterUiState.Running) {
             DataCell("Vy", "%.3f м/с".format(state.readout.vyMs), PrecisionCyan, Modifier.weight(1f))
         }
 
-        SectionLabel("НЕЙРОСЕТЕВОЙ КОЭФФИЦИЕНТ K")
-        NeuralGainBar("K_x", state.readout.kPosX)
-        NeuralGainBar("K_y", state.readout.kPosY)
+        SectionLabel("КОЭФФИЦИЕНТ ДОВЕРИЯ α  (0 = Калман · 1 = Савицкий-Голей)")
+        NeuralGainBar("α", state.readout.alpha)
 
-        SectionLabel("ШУМ ИЗМЕРЕНИЙ R")
+        SectionLabel("СОСТОЯНИЕ GPS")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            DataCell("R[0,0]", "%.2f м²".format(state.readout.rXX), RawAmber, Modifier.weight(1f))
-            DataCell("R[1,1]", "%.2f м²".format(state.readout.rYY), RawAmber, Modifier.weight(1f))
+            DataCell("σ_pos", "%.2f м".format(state.readout.posUncertaintyM), RawAmber, Modifier.weight(1f))
+            DataCell("Точность", "%.1f м".format(state.readout.gpsAccuracyM), RawAmber, Modifier.weight(1f))
         }
 
         // Инновация
@@ -506,26 +506,26 @@ private fun ErrorContent(message: String) {
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 @Composable
-private fun NeuralModeBadge(isNeural: Boolean) {
+private fun NeuralModeBadge(isSmoothing: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(6.dp))
-            .background(if (isNeural) NeuralDim else SurfaceHigh)
-            .border(1.dp, if (isNeural) NeuralAccent.copy(0.5f) else Divider, RoundedCornerShape(6.dp))
+            .background(if (isSmoothing) NeuralDim else SurfaceHigh)
+            .border(1.dp, if (isSmoothing) NeuralAccent.copy(0.5f) else Divider, RoundedCornerShape(6.dp))
             .padding(horizontal = 14.dp, vertical = 10.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = if (isNeural) "🧠 NEURAL K" else "⏳ ПРОГРЕВ...",
+            text = if (isSmoothing) "🧠 СГЛАЖИВАНИЕ" else "⏳ ПРОГРЕВ ОКНА...",
             style = ReadoutStyle.copy(
-                color = if (isNeural) NeuralAccent else TextSecondary,
+                color = if (isSmoothing) NeuralAccent else TextSecondary,
                 fontWeight = FontWeight.Bold, letterSpacing = 2.sp
             )
         )
         Text(
-            text = if (isNeural) "K ← MLP(инновации)" else "K ← Риккати (fallback)",
+            text = if (isSmoothing) "α ← MLP(контекст окна)" else "ожидание 11 точек",
             style = ReadoutStyle.copy(fontSize = 10.sp, color = TextSecondary)
         )
     }
@@ -588,7 +588,7 @@ private fun NeuralTrackCanvas(filteredPoints: List<TrackPoint>, rawPoints: List<
             Modifier.align(Alignment.BottomStart).padding(10.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            LegendItem(NeuralAccent, "Neural K")
+            LegendItem(NeuralAccent, "Сглажено")
             LegendItem(RawAmber,    "GPS raw")
         }
     }
