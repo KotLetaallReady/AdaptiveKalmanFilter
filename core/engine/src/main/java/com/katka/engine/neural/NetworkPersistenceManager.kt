@@ -7,70 +7,108 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Saves and restores [NeuralNetwork] weights to a private JSON file.
+ * A persisted trajectory-smoother model: the trained [NeuralNetwork] plus the
+ * feature-normalisation statistics (μ/σ) that were fitted alongside it.
  *
- * File location: `<filesDir>/neural_kalman_weights.json`
+ * Both must travel together — running inference with the wrong μ/σ feeds the
+ * MLP off-distribution inputs and produces garbage α.
  *
- * JSON schema:
+ * @property network     Trained α-predictor.
+ * @property featureMean μ per input feature.
+ * @property featureStd  σ per input feature.
+ */
+data class LoadedSmoother(
+    val network: NeuralNetwork,
+    val featureMean: DoubleArray,
+    val featureStd: DoubleArray
+) {
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is LoadedSmoother) return false
+        return network === other.network &&
+                featureMean.contentEquals(other.featureMean) &&
+                featureStd.contentEquals(other.featureStd)
+    }
+
+    override fun hashCode(): Int {
+        var r = network.hashCode()
+        r = 31 * r + featureMean.contentHashCode()
+        r = 31 * r + featureStd.contentHashCode()
+        return r
+    }
+}
+
+/**
+ * Saves and restores the smoother model (weights + output activation + feature
+ * normalisation) to a private JSON file.
+ *
+ * File location: `<filesDir>/neural_smoother.json`
+ *
+ * JSON schema (version 2):
  * ```json
  * {
- *   "inputSize":   24,
- *   "hiddenSizes": [32, 16],
- *   "outputSize":  4,
- *   "weights": [[[…], …], …],   // per layer, per neuron, per weight
- *   "biases":  [[…], …]          // per layer, per neuron
+ *   "version": 2,
+ *   "inputSize": 6, "hiddenSizes": [8, 4], "outputSize": 1,
+ *   "outputActivation": "SIGMOID",
+ *   "featureMean": [ … inputSize … ],
+ *   "featureStd":  [ … inputSize … ],
+ *   "weights": [[[…], …], …],
+ *   "biases":  [[…], …]
  * }
- * ```
- *
- * Usage:
- * ```kotlin
- * // Save after training
- * NetworkPersistenceManager.save(context, network)
- *
- * // Load on next launch
- * val network = NetworkPersistenceManager.load(context)
- *     ?: /* train from scratch */
  * ```
  */
 object NetworkPersistenceManager {
 
-    private const val TAG       = "NNPersistence"
-    private const val FILE_NAME = "neural_kalman_weights.json"
+    private const val TAG = "NNPersistence"
+    private const val FILE_NAME = "neural_smoother.json"
+    private const val SCHEMA_VERSION = 2
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Persist [network] weights to disk.
-     * @throws Exception if the file cannot be written (disk full, permissions, etc.)
+     * Persist a trained smoother (network + normalisation statistics).
+     * @throws Exception if the file cannot be written.
      */
-    fun save(context: Context, network: NeuralNetwork) {
+    fun saveSmoother(
+        context: Context,
+        network: NeuralNetwork,
+        featureMean: DoubleArray,
+        featureStd: DoubleArray
+    ) {
         val root = JSONObject().apply {
-            put("inputSize",   network.config.inputSize)
+            put("version", SCHEMA_VERSION)
+            put("inputSize", network.config.inputSize)
             put("hiddenSizes", JSONArray(network.config.hiddenSizes))
-            put("outputSize",  network.config.outputSize)
-            put("weights",     weightsToJson(network.weights))
-            put("biases",      biasesToJson(network.biases))
+            put("outputSize", network.config.outputSize)
+            put("outputActivation", network.config.outputActivation.name)
+            put("featureMean", JSONArray(featureMean.toTypedArray()))
+            put("featureStd", JSONArray(featureStd.toTypedArray()))
+            put("weights", weightsToJson(network.weights))
+            put("biases", biasesToJson(network.biases))
         }
         file(context).writeText(root.toString())
-        Log.i(TAG, "Network saved — ${network.config.allSizes.toList()} — ${file(context).length() / 1024} KB")
+        Log.i(TAG, "Smoother saved — ${network.config.allSizes.toList()} — ${file(context).length() / 1024} KB")
     }
 
     /**
-     * Load a previously saved [NeuralNetwork].
-     * @return The restored network, or `null` if no file exists or the file is corrupt.
+     * Load a previously saved smoother.
+     * @return the restored [LoadedSmoother], or `null` if no file exists or it is corrupt.
      */
-    fun load(context: Context): NeuralNetwork? = runCatching {
+    fun loadSmoother(context: Context): LoadedSmoother? = runCatching {
         val f = file(context)
         if (!f.exists()) return null
 
-        val root       = JSONObject(f.readText())
-        val inputSize  = root.getInt("inputSize")
+        val root = JSONObject(f.readText())
+        val inputSize = root.getInt("inputSize")
         val outputSize = root.getInt("outputSize")
-        val hiddenArr  = root.getJSONArray("hiddenSizes")
+        val hiddenArr = root.getJSONArray("hiddenSizes")
         val hiddenSizes = (0 until hiddenArr.length()).map { hiddenArr.getInt(it) }
+        val activation = runCatching {
+            OutputActivation.valueOf(root.optString("outputActivation", OutputActivation.SIGMOID.name))
+        }.getOrDefault(OutputActivation.SIGMOID)
 
-        val config  = NetworkConfig(inputSize, hiddenSizes, outputSize)
-        val network = NeuralNetwork(config)   // initialised with random weights (overwritten below)
+        val config = NetworkConfig(inputSize, hiddenSizes, outputSize, activation)
+        val network = NeuralNetwork(config) // random init, overwritten below
 
         // Restore weights
         val wLayers = root.getJSONArray("weights")
@@ -89,19 +127,22 @@ object NetworkPersistenceManager {
             for (i in 0 until bs.length()) network.biases[l][i] = bs.getDouble(i)
         }
 
-        Log.i(TAG, "Network loaded — config: ${config.allSizes.toList()}")
-        network
+        val featureMean = readDoubleArray(root, "featureMean", inputSize, default = 0.0)
+        val featureStd = readDoubleArray(root, "featureStd", inputSize, default = 1.0)
+
+        Log.i(TAG, "Smoother loaded — config: ${config.allSizes.toList()} ($activation)")
+        LoadedSmoother(network, featureMean, featureStd)
     }.onFailure { e ->
-        Log.e(TAG, "Failed to load network weights: ${e.message}", e)
+        Log.e(TAG, "Failed to load smoother: ${e.message}", e)
     }.getOrNull()
 
-    /** `true` if a saved network file exists. */
+    /** `true` if a saved smoother file exists. */
     fun exists(context: Context): Boolean = file(context).exists()
 
-    /** Delete the saved weights file (e.g. when the user wants to retrain). */
+    /** Delete the saved smoother (e.g. when the user wants to retrain). */
     fun delete(context: Context): Boolean {
         val deleted = file(context).delete()
-        if (deleted) Log.i(TAG, "Saved network deleted")
+        if (deleted) Log.i(TAG, "Saved smoother deleted")
         return deleted
     }
 
@@ -120,6 +161,11 @@ object NetworkPersistenceManager {
         JSONArray().also { layers ->
             for (layer in biases) layers.put(JSONArray(layer.toTypedArray()))
         }
+
+    private fun readDoubleArray(root: JSONObject, key: String, size: Int, default: Double): DoubleArray {
+        val arr = root.optJSONArray(key) ?: return DoubleArray(size) { default }
+        return DoubleArray(size) { i -> if (i < arr.length()) arr.getDouble(i) else default }
+    }
 
     private fun file(context: Context) = File(context.filesDir, FILE_NAME)
 }

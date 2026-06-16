@@ -97,7 +97,7 @@ private fun ComparisonHeader(uiState: ComparisonUiState) {
                 style = ReadoutStyle.copy(color = NeuralCyan, letterSpacing = 4.sp, fontSize = 10.sp)
             )
             Text(
-                "Classical  vs  Neural K",
+                "Калман  vs  Сглаживатель (α)",
                 style = ReadoutStyle.copy(color = TextSecondary, fontSize = 11.sp)
             )
         }
@@ -137,22 +137,23 @@ private fun IdleComparisonContent() {
     ) {
         InfoCard(
             title   = "КАК РАБОТАЕТ СРАВНЕНИЕ",
-            content = "Оба фильтра запускаются параллельно на одном GPS-потоке. " +
-                    "После остановки данные автоматически сохраняются в Downloads как CSV.",
+            content = "Один фильтр Калмана и нейросглаживатель поверх него запускаются на одном " +
+                    "GPS-потоке. Сравниваются три трека: сырой GPS, фильтр Калмана и сглаженный. " +
+                    "После остановки данные сохраняются в Downloads как CSV.",
             color   = NeuralCyan
         )
         // Легенда цветов
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            LegendChip("Классика", ClassGreen, Modifier.weight(1f))
-            LegendChip("Нейросеть", NeuralCyan, Modifier.weight(1f))
+            LegendChip("Калман", ClassGreen, Modifier.weight(1f))
+            LegendChip("Сглажено", NeuralCyan, Modifier.weight(1f))
             LegendChip("GPS raw", RawAmber, Modifier.weight(1f))
         }
         // Что будет в CSV
         InfoCard(
             title   = "СОДЕРЖИМОЕ CSV",
-            content = "step · timestamp · dt · raw_lat/lon · gps_accuracy · " +
-                    "class_lat/lon · class_kx/ky · class_sigma · class_innov · " +
-                    "neural_lat/lon · neural_kx/ky · neural_sigma · neural_innov · is_neural_active",
+            content = "step · timestamp · raw_lat/lon · gps_accuracy · gps_speed · " +
+                    "kf_lat/lon · kf_vx/vy · kf_sigma · kf_innov · " +
+                    "sg_lat/lon · smoothed_lat/lon · alpha",
             color   = TextSecondary
         )
     }
@@ -189,13 +190,13 @@ private fun RunningContent(state: ComparisonUiState.Running) {
         // Параллельный readout
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterReadoutColumn(
-                label   = "КЛАССИКА",
+                label   = "КАЛМАН",
                 color   = ClassGreen,
                 readout = state.classReadout,
                 modifier = Modifier.weight(1f)
             )
             FilterReadoutColumn(
-                label   = "НЕЙРОСЕТЬ",
+                label   = "СГЛАЖЕНО",
                 color   = NeuralCyan,
                 readout = state.neuralReadout,
                 modifier = Modifier.weight(1f)
@@ -349,8 +350,8 @@ private fun ComparisonTrackCanvas(
             Modifier.align(Alignment.BottomStart).padding(10.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            LegendDot(ClassGreen, "Classical")
-            LegendDot(NeuralCyan, "Neural K")
+            LegendDot(ClassGreen, "Калман")
+            LegendDot(NeuralCyan, "Сглажено")
             LegendDot(RawAmber,   "GPS raw")
         }
     }
@@ -375,8 +376,7 @@ private fun FilterReadoutColumn(
             fontSize = 9.sp, letterSpacing = 2.sp))
         MiniCell("Lat", "%.5f°".format(readout.filteredLat), color)
         MiniCell("Lon", "%.5f°".format(readout.filteredLon), color)
-        MiniCell("K_x", "%.4f".format(readout.kPosX), color)
-        MiniCell("K_y", "%.4f".format(readout.kPosY), color)
+        MiniCell("α",   "%.3f".format(readout.alpha), color)
         MiniCell("σ",   "%.2f м".format(readout.posUncertaintyM), RawAmber)
         MiniCell("‖y‖", "%.2f м".format(readout.innovationMagnitude), TextSecondary)
     }
@@ -429,12 +429,12 @@ private fun NeuralStatusBadge(isActive: Boolean) {
         Arrangement.SpaceBetween, Alignment.CenterVertically
     ) {
         Text(
-            if (isActive) "🧠 Neural K активен" else "⏳ Прогрев нейросети...",
+            if (isActive) "🧠 Сглаживание активно" else "⏳ Прогрев окна...",
             style = ReadoutStyle.copy(color = if (isActive) NeuralCyan else TextSecondary,
                 fontWeight = FontWeight.Bold)
         )
         Text(
-            if (isActive) "K ← MLP" else "K ← Riccati",
+            if (isActive) "α ← MLP" else "ожидание 11 точек",
             style = ReadoutStyle.copy(fontSize = 10.sp, color = TextSecondary)
         )
     }

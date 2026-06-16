@@ -37,31 +37,42 @@ import kotlinx.coroutines.flow.asSharedFlow
  *   [LocationManager.GPS_PROVIDER] (or [LocationManager.NETWORK_PROVIDER] when
  *   GPS is disabled).
  *
- *   Each Location fix provides:
- *     • latitude, longitude (degrees)
- *     • accuracy (1-σ horizontal, metres) ← primary input for R matrix
- *     • speed (m/s) and bearing (°), when available
- *
  * ── IMU ───────────────────────────────────────────────────────────────────────
  *   Uses [Sensor.TYPE_LINEAR_ACCELERATION] — gravity already subtracted by the
- *   Android sensor fusion stack.  The device-frame [ax, ay, az] values are
- *   snapshotted atomically when a GPS fix arrives and injected as the control
- *   input u = [ax, ay] (az is ignored by the 2-D filter but recorded).
+ *   Android sensor fusion stack. Device-frame [ax, ay, az] values are
+ *   snapshotted when a GPS fix arrives.
  *
- *   IMU is registered at [SENSOR_DELAY_GAME] ≈ 20 ms to stay responsive without
- *   flooding the processing pipeline.  GPS drives the filter cadence; IMU only
- *   enriches each GPS observation.
+ *   Uses [Sensor.TYPE_GAME_ROTATION_VECTOR] to obtain the device orientation
+ *   matrix R (3×3, row-major). At each GPS callback device-frame acceleration
+ *   is rotated into the geographic frame (East / North) via:
+ *
+ *     axRaw = R[0]·ax + R[1]·ay + R[2]·az   (East-ish, game frame)
+ *     ayRaw = R[3]·ax + R[4]·ay + R[5]·az   (North-ish, game frame)
+ *
+ *   TYPE_GAME_ROTATION_VECTOR does not use a magnetometer, so its "North"
+ *   reference is the device orientation at session start — not true geographic
+ *   North. A yaw correction angle α is derived from the first reliable GPS
+ *   bearing (speed > 1 m/s) and applied as a 2-D rotation:
+ *
+ *     axGeo =  axRaw·cos α − ayRaw·sin α
+ *     ayGeo =  axRaw·sin α + ayRaw·cos α
+ *
+ *   Before the first bearing fix the correction is identity (α = 0).
+ *   This approach is robust to indoor magnetic disturbances while still
+ *   aligning the IMU frame with true North as soon as the user starts moving.
  *
  * ── Threading ─────────────────────────────────────────────────────────────────
  *   GPS callbacks arrive on the main looper.
- *   IMU values are written by the SensorManager thread and read by the GPS
- *   callback thread — all three fields are @Volatile to ensure visibility.
+ *   IMU values are written by the SensorManager thread — all fields are
+ *   @Volatile. latestRotationMatrix is swapped as a whole reference; the
+ *   FloatArray is never mutated after assignment.
  *
  * ── Permissions required ─────────────────────────────────────────────────────
- *   ACCESS_FINE_LOCATION (runtime), or ACCESS_COARSE_LOCATION for degraded mode.
+ *   ACCESS_FINE_LOCATION (runtime). No additional permissions needed for
+ *   TYPE_LINEAR_ACCELERATION or TYPE_GAME_ROTATION_VECTOR.
  *
- * @param context         Application context (not Activity, to avoid leaks).
- * @param gpsIntervalMs   Minimum time between GPS updates (milliseconds).
+ * @param context          Application context (not Activity, to avoid leaks).
+ * @param gpsIntervalMs    Minimum time between GPS updates (milliseconds).
  * @param minDisplacementM Minimum distance between updates (metres, 0 = no filter).
  */
 class AndroidSensorDataSource(
@@ -93,12 +104,9 @@ class AndroidSensorDataSource(
         LocationServices.getFusedLocationProviderClient(context)
     private val sensorManager: SensorManager =
         context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-
-    // Fallback location provider for devices without Google Play Services
     private val locationManager: LocationManager =
         context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
 
-    // Determine once whether Google Mobile Services are available
     private val hasGms: Boolean by lazy {
         try {
             GoogleApiAvailability.getInstance()
@@ -108,11 +116,26 @@ class AndroidSensorDataSource(
         }
     }
 
-    // ── Latest IMU snapshot (written by sensor thread, read by GPS callback) ─
+    // ── IMU snapshot — device frame (written by sensor thread) ───────────────
     @Volatile private var latestAx: Double = 0.0
     @Volatile private var latestAy: Double = 0.0
     @Volatile private var latestAz: Double = 0.0
-    @Volatile private var hasImu: Boolean  = false
+    @Volatile private var hasImu: Boolean = false
+
+    // ── Rotation snapshot (written by sensor thread) ──────────────────────────
+    // 3×3 rotation matrix in row-major order from SensorManager.
+    // Reference is swapped atomically; array is never mutated after assignment.
+    @Volatile private var latestRotationMatrix: FloatArray? = null
+    @Volatile private var hasRotation: Boolean = false
+
+    // ── Yaw alignment — game frame → true geographic North ───────────────────
+    // TYPE_GAME_ROTATION_VECTOR has no magnetometer, so its azimuth reference
+    // is the device orientation at session start. We correct this once using
+    // the first reliable GPS bearing (speed > 1 m/s).
+    // Stored as (cos α, sin α) to avoid recomputing trigonometry each fix.
+    @Volatile private var yawCorrectionCos: Double = 1.0
+    @Volatile private var yawCorrectionSin: Double = 0.0
+    @Volatile private var isYawAligned: Boolean = false
 
     // ── State ────────────────────────────────────────────────────────────────
     override var isRunning: Boolean = false
@@ -123,21 +146,32 @@ class AndroidSensorDataSource(
         override fun onLocationResult(result: LocationResult) {
             val location = result.lastLocation ?: return
 
-            val observation = Observation(
-                timestamp  = location.time,
-                latitude   = location.latitude,
-                longitude  = location.longitude,
-                accuracy   = location.accuracy,
-                altitude   = if (location.hasAltitude()) location.altitude else 0.0,
-                speed      = if (location.hasSpeed())    location.speed    else 0f,
-                bearing    = if (location.hasBearing())  location.bearing  else 0f,
-                hasSpeed   = location.hasSpeed(),
-                hasBearing = location.hasBearing(),
-                ax = latestAx, ay = latestAy, az = latestAz,
-                hasImu   = hasImu,
-                provider = location.provider ?: "fused"
-            )
+            // Align yaw on the first GPS fix with a reliable bearing
+            if (location.hasBearing() && location.hasSpeed()) {
+                tryAlignYaw(location.bearing, location.speed)
+            }
 
+            val (axGeo, ayGeo, rotValid) = computeGeoAcceleration()
+
+            val observation = Observation(
+                timestamp   = location.time,
+                latitude    = location.latitude,
+                longitude   = location.longitude,
+                accuracy    = location.accuracy,
+                altitude    = if (location.hasAltitude()) location.altitude else 0.0,
+                speed       = if (location.hasSpeed())    location.speed    else 0f,
+                bearing     = if (location.hasBearing())  location.bearing  else 0f,
+                hasSpeed    = location.hasSpeed(),
+                hasBearing  = location.hasBearing(),
+                ax          = latestAx,
+                ay          = latestAy,
+                az          = latestAz,
+                axGeo       = axGeo,
+                ayGeo       = ayGeo,
+                hasImu      = hasImu,
+                hasRotation = rotValid,
+                provider    = location.provider ?: "fused"
+            )
             _observations.tryEmit(observation)
         }
     }
@@ -145,65 +179,158 @@ class AndroidSensorDataSource(
     // ── Fallback LocationListener (android.location API) ─────────────────────
     private val fallbackListener = object : LocationListener {
         override fun onLocationChanged(location: android.location.Location) {
+
+            if (location.hasBearing() && location.hasSpeed()) {
+                tryAlignYaw(location.bearing, location.speed)
+            }
+
+            val (axGeo, ayGeo, rotValid) = computeGeoAcceleration()
+
             val observation = Observation(
-                timestamp  = location.time,
-                latitude   = location.latitude,
-                longitude  = location.longitude,
-                accuracy   = location.accuracy,
-                altitude   = if (location.hasAltitude()) location.altitude else 0.0,
-                speed      = if (location.hasSpeed())    location.speed    else 0f,
-                bearing    = if (location.hasBearing())  location.bearing  else 0f,
-                hasSpeed   = location.hasSpeed(),
-                hasBearing = location.hasBearing(),
-                ax = latestAx, ay = latestAy, az = latestAz,
-                hasImu   = hasImu,
-                provider = location.provider ?: "gps"
+                timestamp   = location.time,
+                latitude    = location.latitude,
+                longitude   = location.longitude,
+                accuracy    = location.accuracy,
+                altitude    = if (location.hasAltitude()) location.altitude else 0.0,
+                speed       = if (location.hasSpeed())    location.speed    else 0f,
+                bearing     = if (location.hasBearing())  location.bearing  else 0f,
+                hasSpeed    = location.hasSpeed(),
+                hasBearing  = location.hasBearing(),
+                ax          = latestAx,
+                ay          = latestAy,
+                az          = latestAz,
+                axGeo       = axGeo,
+                ayGeo       = ayGeo,
+                hasImu      = hasImu,
+                hasRotation = rotValid,
+                provider    = location.provider ?: "gps"
             )
             _observations.tryEmit(observation)
         }
-
-        // Other LocationListener callbacks are not needed for the fallback path
     }
 
-    // ── SensorEventListener (IMU) ─────────────────────────────────────────────
+    // ── SensorEventListener ───────────────────────────────────────────────────
     override fun onSensorChanged(event: SensorEvent) {
-        if (event.sensor.type == Sensor.TYPE_LINEAR_ACCELERATION) {
-            // Device frame: x = right, y = up, z = toward user
-            // For walking/running the filter uses x (East-ish) and y (North-ish)
-            // after coordinate rotation — simplified here to raw device frame.
-            latestAx = event.values[0].toDouble()
-            latestAy = event.values[1].toDouble()
-            latestAz = event.values[2].toDouble()
-            hasImu   = true
+        when (event.sensor.type) {
+
+            Sensor.TYPE_LINEAR_ACCELERATION -> {
+                // Device frame: x = right, y = forward, z = toward user (face-up)
+                // Gravity is already removed by the Android sensor fusion stack
+                latestAx = event.values[0].toDouble()
+                latestAy = event.values[1].toDouble()
+                latestAz = event.values[2].toDouble()
+                hasImu   = true
+            }
+
+            Sensor.TYPE_GAME_ROTATION_VECTOR -> {
+                // Obtain the 3×3 rotation matrix R such that v_world = R · v_device
+                // Row 0 → East-ish, Row 1 → North-ish, Row 2 → Up (game frame)
+                val rotMat = FloatArray(9)
+                SensorManager.getRotationMatrixFromVector(rotMat, event.values)
+                latestRotationMatrix = rotMat   // atomic reference swap
+                hasRotation = true
+            }
         }
     }
 
     override fun onAccuracyChanged(sensor: Sensor, accuracy: Int) {
-        // No action needed for linear acceleration
+        // No action needed
+    }
+
+    // ── Yaw alignment ─────────────────────────────────────────────────────────
+
+    /**
+     * Computes and stores the yaw correction angle α = gpsBearing − gameAzimuth.
+     *
+     * Called on every GPS fix until alignment succeeds. Requires:
+     *   • a valid rotation matrix from TYPE_GAME_ROTATION_VECTOR
+     *   • GPS bearing available
+     *   • speed > 1 m/s so the bearing is physically meaningful (not noise)
+     *
+     * After alignment (cos α, sin α) are used in [computeGeoAcceleration] to
+     * rotate game-frame acceleration into true geographic coordinates.
+     */
+    private fun tryAlignYaw(bearing: Float, speed: Float) {
+        if (isYawAligned || speed < 1.0f) return
+        val rotMat = latestRotationMatrix ?: return
+
+        // Extract the azimuth the game rotation vector currently reports.
+        // This is relative to the phone's initial orientation, not true North.
+        val orientationAngles = FloatArray(3)
+        SensorManager.getOrientation(rotMat, orientationAngles)
+        val gameAzimuthRad = orientationAngles[0].toDouble()   // radians
+
+        // GPS bearing: degrees clockwise from true North → radians
+        val gpsBearingRad = Math.toRadians(bearing.toDouble())
+
+        // Correction: rotate game frame to align with true geographic North
+        val alpha = gpsBearingRad - gameAzimuthRad
+        yawCorrectionCos = kotlin.math.cos(alpha)
+        yawCorrectionSin = kotlin.math.sin(alpha)
+        isYawAligned = true
+    }
+
+    // ── Geo-acceleration ──────────────────────────────────────────────────────
+
+    /**
+     * Rotates the latest device-frame linear acceleration into true geographic
+     * coordinates (East / North) in two steps:
+     *
+     *  1. Game-rotation-vector rotation: device frame → game frame
+     *       axRaw = R[0]·ax + R[1]·ay + R[2]·az
+     *       ayRaw = R[3]·ax + R[4]·ay + R[5]·az
+     *
+     *  2. Yaw correction: game frame → true geographic frame
+     *       axGeo =  axRaw·cos α − ayRaw·sin α
+     *       ayGeo =  axRaw·sin α + ayRaw·cos α
+     *
+     * Before the first GPS bearing fix α = 0 (identity), so step 2 is a no-op.
+     *
+     * Returns (axGeo, ayGeo, valid). If IMU or rotation data are not yet
+     * available, valid = false and axGeo = ayGeo = 0.0 so the caller falls
+     * back to u = [0, 0].
+     */
+    private fun computeGeoAcceleration(): Triple<Double, Double, Boolean> {
+        val rotMat = latestRotationMatrix
+        if (!hasImu || !hasRotation || rotMat == null) return Triple(0.0, 0.0, false)
+
+        val ax = latestAx; val ay = latestAy; val az = latestAz
+
+        // Step 1 — device frame → game rotation frame
+        val axRaw = rotMat[0] * ax + rotMat[1] * ay + rotMat[2] * az
+        val ayRaw = rotMat[3] * ax + rotMat[4] * ay + rotMat[5] * az
+
+        // Step 2 — game frame → true geographic frame (2-D rotation by α)
+        val axGeo = axRaw * yawCorrectionCos - ayRaw * yawCorrectionSin
+        val ayGeo = axRaw * yawCorrectionSin + ayRaw * yawCorrectionCos
+
+        return Triple(axGeo, ayGeo, true)
     }
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    @SuppressLint("MissingPermission")  // Caller must check permissions before calling start()
+    @SuppressLint("MissingPermission")
     override fun start() {
         if (isRunning) return
         if (!wakeLock.isHeld) wakeLock.acquire(30 * 60 * 1000L)
 
-        // Choose the appropriate location provider
-        if (hasGms) {
-            startWithFused()
-        } else {
-            startWithLocationManager()
+        if (hasGms) startWithFused() else startWithLocationManager()
+
+        // Linear acceleration — gravity already removed by Android sensor fusion
+        sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
         }
 
-        // IMU — TYPE_LINEAR_ACCELERATION has gravity already removed
-        sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)?.let { sensor ->
-            sensorManager.registerListener(
-                this,
-                sensor,
-                SensorManager.SENSOR_DELAY_GAME   // ~20 ms
-            )
+        // Game rotation vector — magnetometer-free, immune to indoor magnetic
+        // disturbances; provides the device → world rotation matrix at ~50 Hz
+        sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)?.let { sensor ->
+            sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_GAME)
         }
+
+        // Reset yaw alignment for the new session
+        isYawAligned     = false
+        yawCorrectionCos = 1.0
+        yawCorrectionSin = 0.0
 
         isRunning = true
     }
@@ -246,7 +373,13 @@ class AndroidSensorDataSource(
         fusedClient.removeLocationUpdates(locationCallback)
         locationManager.removeUpdates(fallbackListener)
         sensorManager.unregisterListener(this)
-        hasImu   = false
-        isRunning = false
+
+        hasImu               = false
+        hasRotation          = false
+        latestRotationMatrix = null
+        isYawAligned         = false
+        yawCorrectionCos     = 1.0
+        yawCorrectionSin     = 0.0
+        isRunning            = false
     }
 }

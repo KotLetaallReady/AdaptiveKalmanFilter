@@ -26,13 +26,11 @@ import java.util.Locale
 object CsvExporter {
 
     private val HEADER = listOf(
-        "step", "timestamp_ms", "dt_ms",
+        "step", "timestamp_ms",
         "raw_lat", "raw_lon", "gps_accuracy_m", "gps_speed_ms",
-        "class_lat", "class_lon", "class_vx", "class_vy",
-        "class_kx", "class_ky", "class_rxx", "class_sigma_pos", "class_innov",
-        "neural_lat", "neural_lon", "neural_vx", "neural_vy",
-        "neural_kx", "neural_ky", "neural_rxx", "neural_sigma_pos", "neural_innov",
-        "is_neural_active"
+        "kf_lat", "kf_lon", "kf_vx", "kf_vy", "kf_sigma_pos", "kf_innov",
+        "sg_lat", "sg_lon",
+        "smoothed_lat", "smoothed_lon", "alpha"
     ).joinToString(",")
 
     /**
@@ -72,32 +70,25 @@ object CsvExporter {
             sb.appendLine(buildString {
                 append(r.stepIndex);       append(',')
                 append(r.timestampMs);     append(',')
-                append(f(r.dtMs));         append(',')
+                // Сырой GPS
                 append(f8(r.rawLat));      append(',')
                 append(f8(r.rawLon));      append(',')
                 append(f2(r.gpsAccuracyM.toDouble())); append(',')
                 append(f2(r.gpsSpeedMs.toDouble()));    append(',')
-                // Классика
-                append(f8(r.classLat));    append(',')
-                append(f8(r.classLon));    append(',')
-                append(f4(r.classVx));     append(',')
-                append(f4(r.classVy));     append(',')
-                append(f5(r.classKx));     append(',')
-                append(f5(r.classKy));     append(',')
-                append(f3(r.classRxx));    append(',')
-                append(f3(r.classSigmaPos)); append(',')
-                append(f3(r.classInnov));  append(',')
-                // Нейросеть
-                append(f8(r.neuralLat));   append(',')
-                append(f8(r.neuralLon));   append(',')
-                append(f4(r.neuralVx));    append(',')
-                append(f4(r.neuralVy));    append(',')
-                append(f5(r.neuralKx));    append(',')
-                append(f5(r.neuralKy));    append(',')
-                append(f3(r.neuralRxx));   append(',')
-                append(f3(r.neuralSigmaPos)); append(',')
-                append(f3(r.neuralInnov)); append(',')
-                append(if (r.isNeuralActive) "1" else "0")
+                // Классический фильтр Калмана (центральная точка)
+                append(f8(r.kfLat));       append(',')
+                append(f8(r.kfLon));       append(',')
+                append(f4(r.kfVx));        append(',')
+                append(f4(r.kfVy));        append(',')
+                append(f3(r.kfSigmaPos));  append(',')
+                append(f3(r.kfInnov));     append(',')
+                // Савицкий-Голей
+                append(f8(r.sgLat));       append(',')
+                append(f8(r.sgLon));       append(',')
+                // Нейросглаживатель
+                append(f8(r.smoothedLat)); append(',')
+                append(f8(r.smoothedLon)); append(',')
+                append(f4(r.alpha))
             })
         }
         return sb.toString()
@@ -147,10 +138,8 @@ object CsvExporter {
     private fun timestamp() =
         SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
 
-    private fun f(v: Double)  = "%.1f".format(v)
     private fun f2(v: Double) = "%.2f".format(v)
     private fun f3(v: Double) = "%.3f".format(v)
     private fun f4(v: Double) = "%.4f".format(v)
-    private fun f5(v: Double) = "%.5f".format(v)
     private fun f8(v: Double) = "%.8f".format(v)
 }

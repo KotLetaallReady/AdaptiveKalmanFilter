@@ -54,6 +54,9 @@ data class KalmanReadout(
     val kPosX: Double        = 0.0,
     val kPosY: Double        = 0.0,
 
+    // Коэффициент доверия α ∈ [0,1] нейросглаживателя (0 = чистый фильтр Калмана)
+    val alpha: Double        = 0.0,
+
     // Неопределённость позиции (σ из P)
     val posUncertaintyM: Double = 0.0,
 

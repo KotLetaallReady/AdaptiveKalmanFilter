@@ -101,10 +101,15 @@ class NeuralNetworkTrainer(
                 val prevAct = cache.activations[l]
                 val isLast = l == L - 1
 
-                // δ after activation derivative: linear output → multiply by 1;
-                //                                ReLU hidden   → multiply by 1(z > 0)
+                // δ after activation derivative:
+                //   output layer  → ×1 (linear) or ×ŷ(1−ŷ) (sigmoid)
+                //   hidden layers → ×1(z > 0)  (ReLU)
                 val actDelta = if (isLast) {
-                    delta
+                    when (network.config.outputActivation) {
+                        OutputActivation.LINEAR -> delta
+                        OutputActivation.SIGMOID ->
+                            DoubleArray(output.size) { i -> delta[i] * output[i] * (1.0 - output[i]) }
+                    }
                 } else {
                     DoubleArray(pre.size) { i -> if (pre[i] > 0.0) delta[i] else 0.0 }
                 }

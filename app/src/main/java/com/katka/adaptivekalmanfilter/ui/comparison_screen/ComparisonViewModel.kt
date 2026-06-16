@@ -6,31 +6,40 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.katka.adaptivekalmanfilter.model.ComparisonUiState
 import com.katka.adaptivekalmanfilter.model.KalmanReadout
-import com.katka.adaptivekalmanfilter.model.MetricsUiModel
+import com.katka.adaptivekalmanfilter.model.TrackMetrics
 import com.katka.adaptivekalmanfilter.model.TrackPoint
 import com.katka.adaptivekalmanfilter.recording.CsvExporter
 import com.katka.adaptivekalmanfilter.recording.SessionRecorder
 import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
 import com.katka.engine.KalmanFilter
+import com.katka.engine.KalmanFilterCoordinator
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
-import com.katka.engine.coefficient_startegy.NeuralCoefficientStrategy
 import com.katka.engine.model.FilterResult
 import com.katka.engine.neural.NetworkPersistenceManager
-import com.katka.model.AccuracyMetrics
+import com.katka.engine.smoothing.FeatureNormalizer
+import com.katka.engine.smoothing.NeuralTrajectorySmoother
+import com.katka.engine.smoothing.SmoothedSample
+import com.katka.engine.smoothing.SmootherInput
 import com.katka.model.Observation
-import core.engine.KalmanFilterCoordinator
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import kotlin.math.hypot
 import kotlin.math.sqrt
 
 private const val MAX_TRACK_POINTS = 500
 
+/**
+ * Comparison session.  In the reworked architecture there is **one** classical
+ * Kalman filter; the neural stage is a post-filter [NeuralTrajectorySmoother].
+ * So we compare three views of the same central point: raw GPS, the Kalman
+ * estimate x_KF, and the smoothed output x_out — each [SmoothedSample] is
+ * self-contained, so no two-stream alignment is needed.
+ */
 @HiltViewModel
 class ComparisonViewModel @Inject constructor(
     private val sensorDataSource: AndroidSensorDataSource,
@@ -45,150 +54,109 @@ class ComparisonViewModel @Inject constructor(
     )
     val comparisonUiState: StateFlow<ComparisonUiState> = _comparisonUiState.asStateFlow()
 
-    private val compClassTrack = mutableListOf<TrackPoint>()
-    private val compNeuralTrack = mutableListOf<TrackPoint>()
-    private val compRawTrack = mutableListOf<TrackPoint>()
+    // Tracks for the canvas
+    private val kfTrack = mutableListOf<TrackPoint>()
+    private val smoothTrack = mutableListOf<TrackPoint>()
+    private val rawTrack = mutableListOf<TrackPoint>()
 
-    private var compClassJob: Job? = null
-    private var compNeuralJob: Job? = null
-    private var compObsJob: Job? = null
+    // Accumulators (local metres) for metrics
+    private val kfEst = mutableListOf<Pair<Double, Double>>()
+    private val smoothEst = mutableListOf<Pair<Double, Double>>()
+    private val rawRef = mutableListOf<Pair<Double, Double>>()
 
-    @Volatile
-    private var lastClassResult: FilterResult? = null
-    @Volatile
-    private var lastClassRaw: Pair<Double, Double>? = null
-    @Volatile
-    private var lastCompObs: Observation? = null
+    private var coordinator: KalmanFilterCoordinator? = null
+    private var smoother: NeuralTrajectorySmoother? = null
 
+    @Volatile private var lastObs: Observation? = null
+    private var obsJob: Job? = null
+    private var resultsJob: Job? = null
     private var sessionStartMs = 0L
 
-    // Координаторы
-    private val compClassCoordinator = KalmanFilterCoordinator(
-        sensorSource = sensorDataSource,
-        filter = KalmanFilter(processNoiseStd = 0.1),
-        strategy = ClassicalCoefficientStrategy(
-            adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
-        ),
-        scope = viewModelScope
-    )
-
-    private var compNeuralCoordinator: KalmanFilterCoordinator? = null
-
     fun startComparisonSession() {
-        val network = NetworkPersistenceManager.load(context)
-        if (network == null) {
+        val loaded = NetworkPersistenceManager.loadSmoother(context) ?: run {
             _comparisonUiState.value = ComparisonUiState.NeuralNotTrained
             return
         }
 
         sessionRecorder.reset()
-        compClassTrack.clear()
-        compNeuralTrack.clear()
-        compRawTrack.clear()
-        lastClassResult = null
-        lastClassRaw = null
-        lastCompObs = null
+        kfTrack.clear(); smoothTrack.clear(); rawTrack.clear()
+        kfEst.clear(); smoothEst.clear(); rawRef.clear()
+        lastObs = null
         sessionStartMs = System.currentTimeMillis()
 
-        val nStrategy = NeuralCoefficientStrategy(network)
-        val nFilter = KalmanFilter(processNoiseStd = 0.1)
-        val nCoordinator = KalmanFilterCoordinator(
+        smoother = NeuralTrajectorySmoother(
+            network = loaded.network,
+            normalizer = FeatureNormalizer(loaded.featureMean, loaded.featureStd)
+        )
+
+        val sessionFilter = KalmanFilter(processNoiseStd = 0.1)
+        val sessionCoordinator = KalmanFilterCoordinator(
             sensorSource = sensorDataSource,
-            filter = nFilter,
-            strategy = nStrategy,
+            filter = sessionFilter,
+            strategy = ClassicalCoefficientStrategy(
+                adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
+            ),
             scope = viewModelScope
         )
-        compNeuralCoordinator = nCoordinator
+        coordinator = sessionCoordinator
+        sessionCoordinator.start()
 
-        compObsJob?.cancel()
-        compObsJob = sensorDataSource.observations
-            .onEach { obs -> lastCompObs = obs }
+        obsJob?.cancel()
+        obsJob = sensorDataSource.observations
+            .onEach { obs -> lastObs = obs }
             .launchIn(viewModelScope)
 
-        compClassCoordinator.start()
-        nCoordinator.start()
-
-        compClassJob?.cancel()
-        compClassJob = compClassCoordinator.results
-            .onEach { result ->
-                if (result.dt == 0.0) return@onEach
-                lastClassResult = result
-                lastClassRaw = compClassCoordinator.getRawGpsHistory().lastOrNull()
-            }
-            .catch { e -> _comparisonUiState.value = ComparisonUiState.Error(e.message ?: "Error") }
-            .launchIn(viewModelScope)
-
-        compNeuralJob?.cancel()
-        compNeuralJob = nCoordinator.results
-            .onEach { neuralResult ->
-                if (neuralResult.dt == 0.0) return@onEach
-                nStrategy.updateInnovation(neuralResult.innovation, neuralResult.dt * 1000.0)
-
-                val classResult = lastClassResult ?: return@onEach
-                val rawPair = lastClassRaw ?: return@onEach
-                val obs = lastCompObs ?: return@onEach
-
-                val (rawX, rawY) = rawPair
-                val (rawLat, rawLon) = compClassCoordinator.filter.localToGeo(rawX, rawY)
-
-                sessionRecorder.record(
-                    classResult = classResult,
-                    neuralResult = neuralResult,
-                    classFilter = compClassCoordinator.filter,
-                    neuralFilter = nFilter,
-                    neuralStrategy = nStrategy,
-                    rawLat = rawLat,
-                    rawLon = rawLon,
-                    gpsAccuracy = obs.accuracy,
-                    gpsSpeed = obs.speed
-                )
-
-                val cFiltered = TrackPoint(classResult.state.x.toFloat(), classResult.state.y.toFloat())
-                val nFiltered = TrackPoint(neuralResult.state.x.toFloat(), neuralResult.state.y.toFloat())
-                val raw = TrackPoint(rawX.toFloat(), rawY.toFloat())
-
-                if (compClassTrack.size >= MAX_TRACK_POINTS) compClassTrack.removeAt(0)
-                if (compNeuralTrack.size >= MAX_TRACK_POINTS) compNeuralTrack.removeAt(0)
-                if (compRawTrack.size >= MAX_TRACK_POINTS) compRawTrack.removeAt(0)
-
-                compClassTrack.add(cFiltered)
-                compNeuralTrack.add(nFiltered)
-                compRawTrack.add(raw)
-
-                val (cLat, cLon) = compClassCoordinator.filter.localToGeo(classResult.state.x, classResult.state.y)
-                val (nLat, nLon) = nFilter.localToGeo(neuralResult.state.x, neuralResult.state.y)
-
-                val classReadout = buildReadout(classResult, compClassCoordinator.filter, cLat, cLon, raw)
-                val neuralReadout = buildReadout(neuralResult, nFilter, nLat, nLon, raw)
-
-                _comparisonUiState.value = ComparisonUiState.Running(
-                    stepCount = sessionRecorder.rowCount,
-                    elapsedSeconds = elapsedSec(),
-                    classReadout = classReadout,
-                    neuralReadout = neuralReadout,
-                    trackPoints = compClassTrack.toList(),
-                    neuralPoints = compNeuralTrack.toList(),
-                    rawPoints = compRawTrack.toList(),
-                    isNeuralActive = nStrategy.isNetworkReady
-                )
-            }
+        resultsJob?.cancel()
+        resultsJob = sessionCoordinator.results
+            .onEach { result -> handleResult(result, sessionCoordinator, sessionFilter) }
             .catch { e -> _comparisonUiState.value = ComparisonUiState.Error(e.message ?: "Error") }
             .launchIn(viewModelScope)
 
         _comparisonUiState.value = ComparisonUiState.Running(stepCount = 0, elapsedSeconds = 0)
     }
 
+    private fun handleResult(
+        result: FilterResult,
+        coordinator: KalmanFilterCoordinator,
+        filter: KalmanFilter
+    ) {
+        if (result.dt == 0.0) return
+        val rawXY = coordinator.getRawGpsHistory().lastOrNull() ?: return
+        val sample = smoother?.push(buildInput(result, lastObs, rawXY)) ?: return
+
+        sessionRecorder.record(sample, filter)
+
+        addPoint(kfTrack, TrackPoint(sample.kfX.toFloat(), sample.kfY.toFloat()))
+        addPoint(smoothTrack, TrackPoint(sample.outX.toFloat(), sample.outY.toFloat()))
+        addPoint(rawTrack, TrackPoint(sample.rawX.toFloat(), sample.rawY.toFloat()))
+        kfEst.add(sample.kfX to sample.kfY)
+        smoothEst.add(sample.outX to sample.outY)
+        rawRef.add(sample.rawX to sample.rawY)
+
+        val (kfLat, kfLon) = filter.localToGeo(sample.kfX, sample.kfY)
+        val (outLat, outLon) = filter.localToGeo(sample.outX, sample.outY)
+
+        _comparisonUiState.value = ComparisonUiState.Running(
+            stepCount = sessionRecorder.rowCount,
+            elapsedSeconds = elapsedSec(),
+            classReadout = kfReadout(sample, kfLat, kfLon),
+            neuralReadout = smoothReadout(sample, outLat, outLon),
+            trackPoints = kfTrack.toList(),
+            neuralPoints = smoothTrack.toList(),
+            rawPoints = rawTrack.toList(),
+            isNeuralActive = true
+        )
+    }
+
     fun stopComparisonSession() {
-        compObsJob?.cancel(); compObsJob = null
-        compClassJob?.cancel(); compClassJob = null
-        compNeuralJob?.cancel(); compNeuralJob = null
-        compClassCoordinator.stop()
-        compNeuralCoordinator?.stop()
+        obsJob?.cancel(); obsJob = null
+        resultsJob?.cancel(); resultsJob = null
+        coordinator?.stop()
 
         val current = _comparisonUiState.value as? ComparisonUiState.Running ?: return
 
-        val classMetrics = compClassCoordinator.computeMetrics().toUiModel()
-        val neuralMetrics = compNeuralCoordinator?.computeMetrics()?.toUiModel() ?: MetricsUiModel.EMPTY
+        val classMetrics = TrackMetrics.compute(kfEst, rawRef)
+        val neuralMetrics = TrackMetrics.compute(smoothEst, rawRef)
 
         viewModelScope.launch(Dispatchers.IO) {
             val uri = try {
@@ -196,29 +164,25 @@ class ComparisonViewModel @Inject constructor(
             } catch (e: Exception) {
                 null
             }
-
             _comparisonUiState.value = ComparisonUiState.Finished(
                 stepCount = sessionRecorder.rowCount,
                 elapsedSeconds = current.elapsedSeconds,
                 classMetrics = classMetrics,
                 neuralMetrics = neuralMetrics,
                 exportedUri = uri,
-                trackPoints = compClassTrack.toList(),
-                neuralPoints = compNeuralTrack.toList(),
-                rawPoints = compRawTrack.toList()
+                trackPoints = kfTrack.toList(),
+                neuralPoints = smoothTrack.toList(),
+                rawPoints = rawTrack.toList()
             )
         }
     }
 
     fun resetComparisonToIdle() {
-        compObsJob?.cancel(); compObsJob = null
-        compClassJob?.cancel(); compClassJob = null
-        compNeuralJob?.cancel(); compNeuralJob = null
-        compClassCoordinator.stop()
-        compNeuralCoordinator?.stop()
-        compClassTrack.clear()
-        compNeuralTrack.clear()
-        compRawTrack.clear()
+        obsJob?.cancel(); obsJob = null
+        resultsJob?.cancel(); resultsJob = null
+        coordinator?.stop()
+        kfTrack.clear(); smoothTrack.clear(); rawTrack.clear()
+        kfEst.clear(); smoothEst.clear(); rawRef.clear()
         sessionRecorder.reset()
         _comparisonUiState.value = if (NetworkPersistenceManager.exists(context))
             ComparisonUiState.Idle else ComparisonUiState.NeuralNotTrained
@@ -241,51 +205,61 @@ class ComparisonViewModel @Inject constructor(
         CsvExporter.share(context, uri)
     }
 
-    // ── Утилиты ───────────────────────────────────────────────────────────────
-    private fun buildReadout(
+    // ── Builders / utils ──────────────────────────────────────────────────────
+    private fun buildInput(
         result: FilterResult,
-        filter: KalmanFilter,
-        fLat: Double,
-        fLon: Double,
-        raw: TrackPoint
-    ): KalmanReadout {
-        val K = result.kalmanGain
-        val R = result.measurementNoiseR
+        obs: Observation?,
+        rawXY: Pair<Double, Double>
+    ): SmootherInput {
         val innov = result.innovation
         val innovMag = if (innov.size >= 2) sqrt(innov[0] * innov[0] + innov[1] * innov[1]) else 0.0
-        val (rLat, rLon) = filter.localToGeo(raw.x.toDouble(), raw.y.toDouble())
-        return KalmanReadout(
-            filteredLat = fLat, filteredLon = fLon,
-            rawLat = rLat, rawLon = rLon,
-            vxMs = result.state.vx, vyMs = result.state.vy,
-            rXX = R.getOrNull(0)?.getOrNull(0) ?: 0.0,
-            rYY = R.getOrNull(1)?.getOrNull(1) ?: 0.0,
-            kPosX = K.getOrNull(0)?.getOrNull(0) ?: 0.0,
-            kPosY = K.getOrNull(1)?.getOrNull(1) ?: 0.0,
-            posUncertaintyM = result.state.positionUncertaintyMeters,
-            innovationMagnitude = innovMag,
-            dtMs = result.dt * 1000.0,
-            gpsAccuracyM = 0f
+        val speed = when {
+            obs != null && obs.hasSpeed -> obs.speed.toDouble()
+            else -> hypot(result.state.vx, result.state.vy)
+        }
+        return SmootherInput(
+            timestamp = result.timestamp,
+            kfX = result.state.x, kfY = result.state.y,
+            rawX = rawXY.first, rawY = rawXY.second,
+            vx = result.state.vx, vy = result.state.vy,
+            speed = speed,
+            accuracy = obs?.accuracy?.toDouble() ?: 10.0,
+            innovationMag = innovMag,
+            sigmaPos = result.state.positionUncertaintyMeters
         )
+    }
+
+    /** Classical column = pure Kalman point (α = 0). */
+    private fun kfReadout(sample: SmoothedSample, lat: Double, lon: Double) = KalmanReadout(
+        filteredLat = lat, filteredLon = lon,
+        vxMs = sample.vx, vyMs = sample.vy,
+        alpha = 0.0,
+        posUncertaintyM = sample.sigmaPos,
+        innovationMagnitude = sample.innovationMag,
+        gpsAccuracyM = sample.accuracy.toFloat()
+    )
+
+    /** Neural column = smoothed point with the predicted α. */
+    private fun smoothReadout(sample: SmoothedSample, lat: Double, lon: Double) = KalmanReadout(
+        filteredLat = lat, filteredLon = lon,
+        vxMs = sample.vx, vyMs = sample.vy,
+        alpha = sample.alpha,
+        posUncertaintyM = sample.sigmaPos,
+        innovationMagnitude = sample.innovationMag,
+        gpsAccuracyM = sample.accuracy.toFloat()
+    )
+
+    private fun addPoint(list: MutableList<TrackPoint>, point: TrackPoint) {
+        if (list.size >= MAX_TRACK_POINTS) list.removeAt(0)
+        list.add(point)
     }
 
     private fun elapsedSec() = ((System.currentTimeMillis() - sessionStartMs) / 1000).toInt()
 
-    private fun AccuracyMetrics.toUiModel() = MetricsUiModel(
-        rmse = "%.2f м".format(rmse),
-        mae = "%.2f м".format(mae),
-        maxError = "%.2f м".format(maxError),
-        stability = "%.3f м".format(stability),
-        lag = "%.1f шаг".format(lag),
-        sampleCount = sampleCount
-    )
-
     override fun onCleared() {
         super.onCleared()
-        compObsJob?.cancel()
-        compClassJob?.cancel()
-        compNeuralJob?.cancel()
-        compClassCoordinator.stop()
-        compNeuralCoordinator?.stop()
+        obsJob?.cancel()
+        resultsJob?.cancel()
+        coordinator?.stop()
     }
 }
