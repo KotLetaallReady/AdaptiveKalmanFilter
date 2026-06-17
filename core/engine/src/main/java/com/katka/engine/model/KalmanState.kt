@@ -1,19 +1,8 @@
 package com.katka.engine.model
 
 import com.katka.engine.MatrixOps
-import kotlin.collections.get
 
-/**
- * Complete state of the Kalman filter at a single time step.
- *
- * State vector:  x = [x, y, vx, vy]ᵀ
- *   x, y  — position in local metric coordinates (metres relative to a reference point)
- *   vx, vy — velocity (m/s) estimated by the filter
- *
- * P — 4×4 error covariance matrix.
- *     P[i][i] is the variance of state component i.
- *     Off-diagonal entries capture correlations (e.g., position–velocity coupling).
- */
+/** Filter state x = [x, y, vx, vy] with its 4×4 error covariance P. */
 data class KalmanState(
     val x: Double,
     val y: Double,
@@ -21,38 +10,23 @@ data class KalmanState(
     val vy: Double,
     val P: Array<DoubleArray>
 ) {
-    /** Expose the state as a plain vector for matrix math. */
+    /** The state as a plain vector for matrix math. */
     fun toVector(): DoubleArray = doubleArrayOf(x, y, vx, vy)
 
-    /**
-     * 1-σ positional uncertainty derived from the diagonal of P.
-     * σ_pos = √(P[0][0] + P[1][1])  — combined horizontal uncertainty, metres.
-     */
+    /** 1-σ horizontal position uncertainty, √(P[0][0] + P[1][1]) in metres. */
     val positionUncertaintyMeters: Double
         get() = Math.sqrt(P[0][0] + P[1][1])
 
+    /** 1-σ velocity uncertainty, √(P[2][2] + P[3][3]) in m/s. */
     val velocityUncertaintyMs: Double
         get() = Math.sqrt(P[2][2] + P[3][3])
 
-    // ── Companion ────────────────────────────────────────────────────────────
-
     companion object {
 
-        /** STATE_DIM is fixed at 4: [x, y, vx, vy]. */
+        /** State dimension (x, y, vx, vy). */
         const val DIM = 4
 
-        /**
-         * Build an initial state from the very first GPS fix.
-         *
-         * @param x   initial x-position (metres)
-         * @param y   initial y-position (metres)
-         * @param posVariance  initial position variance (σ_pos² in m²).
-         *            Use accuracy² from the first GPS fix, or a large value (e.g. 100)
-         *            when the fix quality is unknown.
-         * @param velVariance  initial velocity variance (σ_v² in (m/s)²).
-         *            Typically set to a moderate value (e.g. 10) since we don't
-         *            know the starting speed.
-         */
+        /** Builds an initial state from the first GPS fix with the given position/velocity variances. */
         fun initial(
             x: Double,
             y: Double,
@@ -67,8 +41,6 @@ data class KalmanState(
             return KalmanState(x = x, y = y, vx = 0.0, vy = 0.0, P = P)
         }
     }
-
-    // ── equals / hashCode (Array fields need custom impl) ───────────────────
 
     override fun equals(other: Any?): Boolean {
         if (this === other) return true

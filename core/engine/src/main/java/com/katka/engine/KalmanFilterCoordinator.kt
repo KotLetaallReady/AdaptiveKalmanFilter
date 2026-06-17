@@ -1,6 +1,5 @@
 package com.katka.engine
 
-import android.util.Log
 import com.katka.data.SensorDataSource
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
 import com.katka.engine.coefficient_startegy.CoefficientStrategy
@@ -14,28 +13,27 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 
-private const val TAG = "KalmanLog"
-
-// ── Thresholds для предупреждений ─────────────────────────────────────────────
-private const val WARN_INNOVATION_M      = 10.0   // инновация > 10 м — подозрительно
-private const val WARN_UNCERTAINTY_M     = 50.0   // неопределённость > 50 м — фильтр расходится
-private const val WARN_KALMAN_GAIN_HIGH  = 0.95   // K близко к 1 — фильтр не доверяет модели
-private const val WARN_KALMAN_GAIN_LOW   = 0.001  // K близко к 0 — фильтр игнорирует GPS
-private const val WARN_DT_SPIKE_MS       = 5000.0 // пропуск > 5 с между фиксами
-private const val LOG_EVERY_N_STEPS      = 1      // логировать каждый N-й шаг (1 = каждый)
-
+/** Drives a tracking session: collects observations, runs the Kalman filter, and exposes results as a hot Flow. */
 class KalmanFilterCoordinator(
     private val sensorSource: SensorDataSource,
     val filter: KalmanFilter,
     private val strategy: CoefficientStrategy,
     private val scope: CoroutineScope,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
-    private val filterMode: FilterMode = FilterMode.CLASSICAL
+    private val filterMode: FilterMode = FilterMode.CLASSICAL,
+    private val logger: Logger = Logger.NoOp
 ) {
+    /** Routes the engine's Log.x(TAG, …) calls through the injected [Logger]; silent by default. */
+    private val Log = object {
+        fun i(tag: String, m: String) = logger.i(m)
+        fun d(tag: String, m: String) = logger.d(m)
+        fun w(tag: String, m: String) = logger.w(m)
+        fun e(tag: String, m: String, t: Throwable? = null) = logger.e(m, t)
+    }
+
     private val resultHistory = mutableListOf<FilterResult>()
     private val rawGpsHistory = mutableListOf<Pair<Double, Double>>()
 
-    // ── ДОБАВИТЬ: счётчик тёплых фиксов ──────────────────────────────────────
     private var consecutiveGoodFixes = 0
 
     private val H: Array<DoubleArray> = arrayOf(
@@ -48,6 +46,7 @@ class KalmanFilterCoordinator(
     private var sessionStartMs   = 0L
     private var lastObsTimestamp = 0L
 
+    /** Hot Flow of per-step filter results, shared while subscribed. */
     val results: Flow<FilterResult> = flow {
         sensorSource.observations.collect { obs ->
             val result = processObservation(obs)
@@ -62,6 +61,7 @@ class KalmanFilterCoordinator(
             replay  = 1
         )
 
+    /** Resets state and starts the sensor source for a new session. */
     fun start() {
         filter.reset(strategy)
         resultHistory.clear()
@@ -84,6 +84,7 @@ class KalmanFilterCoordinator(
         sensorSource.start()
     }
 
+    /** Stops the sensor source and logs a session summary. */
     fun stop() {
         sensorSource.stop()
 
@@ -103,6 +104,7 @@ class KalmanFilterCoordinator(
         })
     }
 
+    /** Computes accuracy metrics of the filtered track against the raw GPS track. */
     fun computeMetrics(): AccuracyMetrics {
         if (resultHistory.size < 2 || rawGpsHistory.size < 2) return AccuracyMetrics.EMPTY
         val n = minOf(resultHistory.size, rawGpsHistory.size)
@@ -138,9 +140,13 @@ class KalmanFilterCoordinator(
         return AccuracyMetrics(rmse, mae, maxError, lag = 0.0, stability = stability, sampleCount = n)
     }
 
+    /** Snapshot of all filter results produced this session. */
     fun getHistory(): List<FilterResult>               = resultHistory.toList()
+
+    /** Snapshot of all raw GPS positions (local metres) produced this session. */
     fun getRawGpsHistory(): List<Pair<Double, Double>> = rawGpsHistory.toList()
 
+    /** Validates one observation (warm-up, dedup, dt gating) and runs a single filter step. */
     private fun processObservation(obs: Observation): FilterResult? {
         return try {
             if (obs.timestamp > 0L && obs.timestamp == lastObsTimestamp) {
@@ -184,9 +190,6 @@ class KalmanFilterCoordinator(
             rawGpsHistory.add(rawX to rawY)
 
             if (!isFirstObs && strategy is ClassicalCoefficientStrategy) {
-                // Feed the innovation back to the adaptive-R (Sage-Husa) estimator.
-                // The neural smoother is a separate post-filter stage and needs
-                // nothing from the coordinator here.
                 strategy.updateInnovation(
                     innovation = result.innovation,
                     H          = H,
@@ -207,6 +210,7 @@ class KalmanFilterCoordinator(
         }
     }
     
+    /** Logs the incoming observation (init banner on the first fix, one line afterwards). */
     private fun logIncomingObservation(obs: Observation, isFirst: Boolean, gapMs: Long) {
         if (isFirst) {
             Log.i(TAG, buildString {
@@ -232,6 +236,7 @@ class KalmanFilterCoordinator(
         })
     }
 
+    /** Logs the full per-step filter readout (state, K, R, innovation, uncertainty). */
     private fun logFilterResult(result: FilterResult, rawX: Double, rawY: Double, gapMs: Long) {
         val K    = result.kalmanGain
         val kx   = K.getOrNull(0)?.getOrNull(0) ?: 0.0
@@ -277,6 +282,7 @@ class KalmanFilterCoordinator(
         })
     }
 
+    /** Warns on suspicious steps (large innovation, divergence, extreme gain, long gaps). */
     private fun checkAnomalies(result: FilterResult, gapMs: Long) {
         val K   = result.kalmanGain
         val kx  = K.getOrNull(0)?.getOrNull(0) ?: 0.0
@@ -312,6 +318,7 @@ class KalmanFilterCoordinator(
         }
     }
 
+    /** Maps a gain value to a short quality label for the log. */
     private fun gainQuality(k: Double): String = when {
         k > WARN_KALMAN_GAIN_HIGH -> "⚠ ВЫСОКИЙ"
         k < WARN_KALMAN_GAIN_LOW  -> "⚠ НИЗКИЙ"
@@ -319,6 +326,7 @@ class KalmanFilterCoordinator(
         else                      -> "~ допустимо"
     }
 
+    /** Maps an innovation magnitude to a short quality label for the log. */
     private fun innovQuality(mag: Double): String = when {
         mag < 2.0  -> "✓ хорошо"
         mag < 5.0  -> "~ умеренно"

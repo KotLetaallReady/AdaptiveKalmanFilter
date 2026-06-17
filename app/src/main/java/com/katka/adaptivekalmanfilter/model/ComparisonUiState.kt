@@ -1,8 +1,6 @@
 package com.katka.adaptivekalmanfilter.model
 
-/**
- * Состояния сравнительной сессии (оба фильтра параллельно).
- */
+/** UI states for the comparison session (raw GPS vs Kalman vs smoother). */
 sealed class ComparisonUiState {
 
     object NeedsPermission : ComparisonUiState()
@@ -14,13 +12,13 @@ sealed class ComparisonUiState {
         val elapsedSeconds: Int,
         val classReadout:   KalmanReadout = KalmanReadout(),
         val neuralReadout:  KalmanReadout = KalmanReadout(),
-        val trackPoints:    List<TrackPoint> = emptyList(),  // классика
+        val trackPoints:    List<TrackPoint> = emptyList(),
         val neuralPoints:   List<TrackPoint> = emptyList(),
         val rawPoints:      List<TrackPoint> = emptyList(),
         val isNeuralActive: Boolean = false
     ) : ComparisonUiState()
 
-    /** Сессия завершена, CSV сохранён. */
+    /** Session finished, CSV exported. */
     data class Finished(
         val stepCount:     Int,
         val elapsedSeconds:Int,

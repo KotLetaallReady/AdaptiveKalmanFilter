@@ -27,7 +27,7 @@ object Routes {
     const val MENU       = "menu"
     const val FILTER     = "filter"
     const val NEURAL_FILTER = "neural_filter"
-    const val COMPARISON = "comparison"   // ← НОВЫЙ МАРШРУТ
+    const val COMPARISON = "comparison"
 }
 
 @Composable

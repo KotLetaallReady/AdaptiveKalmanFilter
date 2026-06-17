@@ -2,44 +2,12 @@ package com.katka.engine.smoothing
 
 import kotlin.math.sqrt
 
-/**
- * Analytic optimal trust weight α* (diploma §3.2) — the **training label**.
- *
- * For a window's central point we have three positions:
- *   x_KF — the Kalman estimate,
- *   x_SG — the Savitzky–Golay estimate over the Kalman points,
- *   x*   — the pseudo-truth (Savitzky–Golay over the *raw GPS* points).
- *
- * We seek the α that makes the convex blend closest to the pseudo-truth:
- *
- *     α* = argmin ‖(1−α)·x_KF + α·x_SG − x*‖²
- *
- * Letting d = x_SG − x_KF (correction direction) and e = x* − x_KF (offset),
- * the quadratic minimises analytically at
- *
- *     α* = (dᵀe) / ‖d‖²
- *
- * i.e. the scalar projection of e onto d, normalised by ‖d‖.  The result is
- * clipped to [0,1]; when ‖d‖ ≈ 0 (x_KF and x_SG coincide, direction undefined)
- * α* defaults to 0.5.
- *
- * ── Turn suppression ─────────────────────────────────────────────────────────
- * A high α would smooth hard, which cuts corners on sharp turns.  So α* is
- * damped by the total turn angle φ accumulated over the window (only segments
- * with |Δβ| > 30° count):
- *
- *     α* ← α* · max(0.05, 1 − φ/60°)
- */
+/** Computes the analytic optimal trust weight alpha* used as the smoother's training label. */
 object OptimalAlpha {
 
     private const val DEGENERATE_EPS = 1e-9
 
-    /**
-     * @param xKf          central Kalman position [x,y]
-     * @param xSg          Savitzky–Golay position over Kalman points [x,y]
-     * @param xStar        pseudo-truth (Savitzky–Golay over raw GPS) [x,y]
-     * @param turnAngleDeg φ — total |Δβ| of segments steeper than 30° (degrees)
-     */
+    /** Returns alpha* = clip(d·e/|d|^2, 0, 1) with turn-angle suppression; 0.5 when the correction direction is undefined. */
     fun solve(
         xKf: DoubleArray,
         xSg: DoubleArray,
@@ -60,10 +28,9 @@ object OptimalAlpha {
 
         val suppression = (1.0 - turnAngleDeg / 60.0).coerceAtLeast(0.05)
         alpha *= suppression
-
         return alpha.coerceIn(0.0, 1.0)
     }
 
-    /** Helper: Euclidean norm of a 2-vector (handy for tests/diagnostics). */
+    /** Euclidean norm of a 2-vector. */
     fun norm(v: DoubleArray): Double = sqrt(v[0] * v[0] + v[1] * v[1])
 }

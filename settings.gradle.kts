@@ -21,9 +21,7 @@ dependencyResolutionManagement {
 
 rootProject.name = "AdaptiveKalmanFilter"
 include(":app")
-include(":core")
 include(":core:model")
 include(":core:engine")
-include(":core:coefficients")
-include(":core:metrics")
 include(":core:data")
+include(":core:android")

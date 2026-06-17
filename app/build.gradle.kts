@@ -40,12 +40,10 @@ android {
 }
 
 dependencies {
-    implementation(project(":core"))
-    implementation(project(":core:coefficients"))
     implementation(project(":core:engine"))
-    implementation(project(":core:metrics"))
     implementation(project(":core:model"))
     implementation(project(":core:data"))
+    implementation(project(":core:android"))
 
     // Hilt
     implementation(libs.hilt.android)

@@ -2,24 +2,7 @@ package com.katka.engine.smoothing
 
 import com.katka.engine.neural.NeuralNetwork
 
-/**
- * Inference-time fixed-lag trajectory smoother (diploma §3.1).
- *
- * Second stage of the pipeline: fed one Kalman filter step at a time, it
- * maintains a window of [SmootherFeatures.L] points and, once full, emits a
- * smoothed estimate of the **central** point (lag = [SmootherFeatures.HALF]):
- *
- *     features  = SmootherFeatures.extract(window)      (6 raw stats)
- *     f̂         = normalizer.normalize(features)
- *     α         = network.predict(f̂)                    (sigmoid output ∈ (0,1))
- *     x_SG      = SavitzkyGolay(window of Kalman points)
- *     x_out     = (1−α)·x_KF + α·x_SG
- *
- * The classical Kalman filter is unchanged; this only post-processes its output.
- *
- * @param network    Trained α-predictor (6→8→4→1, sigmoid output).
- * @param normalizer μ/σ fitted on the training set (must match [network]).
- */
+/** Inference-time fixed-lag smoother: predicts alpha and blends the Kalman and Savitzky-Golay central points. */
 class NeuralTrajectorySmoother(
     private val network: NeuralNetwork,
     private val normalizer: FeatureNormalizer
@@ -28,10 +11,7 @@ class NeuralTrajectorySmoother(
 
     fun reset() = window.clear()
 
-    /**
-     * Push one filter step.
-     * @return a [SmoothedSample] for the central point once the window is full, else `null`.
-     */
+    /** Pushes one filter step; returns a [SmoothedSample] for the central point once the window is full, else null. */
     fun push(input: SmootherInput): SmoothedSample? {
         window.push(input)
         if (!window.isFull) return null

@@ -1,21 +1,22 @@
 package com.katka.adaptivekalmanfilter.ui.neural_filter
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.katka.adaptivekalmanfilter.model.KalmanReadout
 import com.katka.adaptivekalmanfilter.model.NeuralFilterUiState
-import com.katka.adaptivekalmanfilter.model.TrackMetrics
 import com.katka.adaptivekalmanfilter.model.TrackPoint
-import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
+import com.katka.adaptivekalmanfilter.model.toMetricsUiModel
+import com.katka.android.AndroidSensorDataSource
 import com.katka.engine.KalmanFilter
 import com.katka.engine.KalmanFilterCoordinator
+import com.katka.engine.Logger
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
+import com.katka.engine.metrics.MetricsEvaluator
 import com.katka.engine.model.FilterResult
 import com.katka.engine.neural.NetworkConfig
 import com.katka.engine.neural.NeuralNetwork
 import com.katka.engine.neural.NeuralNetworkTrainer
-import com.katka.engine.neural.NetworkPersistenceManager
+import com.katka.engine.neural.SmootherRepository
 import com.katka.engine.smoothing.FeatureNormalizer
 import com.katka.engine.smoothing.NeuralTrajectorySmoother
 import com.katka.engine.smoothing.SmoothedSample
@@ -23,7 +24,6 @@ import com.katka.engine.smoothing.SmootherInput
 import com.katka.engine.smoothing.SmoothingTrainingCollector
 import com.katka.model.Observation
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.*
@@ -49,37 +49,33 @@ private const val MAX_TRACK_POINTS = 500
 @HiltViewModel
 class NeuralFilterViewModel @Inject constructor(
     private val sensorDataSource: AndroidSensorDataSource,
-    @ApplicationContext private val context: Context
+    private val smootherRepository: SmootherRepository,
+    private val logger: Logger
 ) : ViewModel() {
 
-    // ── Training-data collection ──────────────────────────────────────────────
     private val trainingCollector = SmoothingTrainingCollector()
     @Volatile private var lastObservation: Observation? = null
     private var observationJob: Job? = null
     private var resultsJob: Job? = null
 
-    // ── Runtime stages ────────────────────────────────────────────────────────
     private var coordinator: KalmanFilterCoordinator? = null
     private var smoother: NeuralTrajectorySmoother? = null
 
-    // ── Tracks / metrics ──────────────────────────────────────────────────────
     private val track = mutableListOf<TrackPoint>()   // KF track (collect) or smoothed track (run)
     private val raw = mutableListOf<TrackPoint>()
     private val smoothedEst = mutableListOf<Pair<Double, Double>>()  // x_out (local metres)
     private val smoothedRef = mutableListOf<Pair<Double, Double>>()  // central raw GPS
     private var sessionStartMs = 0L
 
-    // ── UI state ──────────────────────────────────────────────────────────────
     private val _neuralUiState = MutableStateFlow<NeuralFilterUiState>(
-        if (NetworkPersistenceManager.exists(context)) NeuralFilterUiState.ReadyToRun
+        if (smootherRepository.exists()) NeuralFilterUiState.ReadyToRun
         else NeuralFilterUiState.NotTrained
     )
     val neuralUiState: StateFlow<NeuralFilterUiState> = _neuralUiState.asStateFlow()
 
-    // ── Permissions ───────────────────────────────────────────────────────────
     fun onPermissionGranted() {
         if (_neuralUiState.value is NeuralFilterUiState.NeedsPermission)
-            _neuralUiState.value = if (NetworkPersistenceManager.exists(context))
+            _neuralUiState.value = if (smootherRepository.exists())
                 NeuralFilterUiState.ReadyToRun else NeuralFilterUiState.NotTrained
     }
 
@@ -87,7 +83,6 @@ class NeuralFilterViewModel @Inject constructor(
         _neuralUiState.value = NeuralFilterUiState.NeedsPermission
     }
 
-    // ── Phase 1: collect training data ────────────────────────────────────────
     fun startDataCollection() {
         trainingCollector.reset()
         lastObservation = null
@@ -106,7 +101,8 @@ class NeuralFilterViewModel @Inject constructor(
             strategy = ClassicalCoefficientStrategy(
                 adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
             ),
-            scope = viewModelScope
+            scope = viewModelScope,
+            logger = logger
         )
         coordinator = collectionCoordinator
         collectionCoordinator.start()
@@ -140,7 +136,6 @@ class NeuralFilterViewModel @Inject constructor(
         launchTraining()
     }
 
-    // ── Phase 2: train the α-network ──────────────────────────────────────────
     private fun launchTraining() {
         viewModelScope.launch(Dispatchers.Default) {
             val dataset = trainingCollector.buildDataset()
@@ -164,17 +159,14 @@ class NeuralFilterViewModel @Inject constructor(
             }
 
             withContext(Dispatchers.IO) {
-                NetworkPersistenceManager.saveSmoother(
-                    context, network, dataset.normalizer.mean, dataset.normalizer.std
-                )
+                smootherRepository.save(network, dataset.normalizer.mean, dataset.normalizer.std)
             }
             _neuralUiState.value = NeuralFilterUiState.ReadyToRun
         }
     }
 
-    // ── Phase 3: run the smoother ─────────────────────────────────────────────
     fun startNeuralSession() {
-        val loaded = NetworkPersistenceManager.loadSmoother(context) ?: run {
+        val loaded = smootherRepository.load() ?: run {
             _neuralUiState.value = NeuralFilterUiState.NotTrained; return
         }
 
@@ -194,7 +186,8 @@ class NeuralFilterViewModel @Inject constructor(
             strategy = ClassicalCoefficientStrategy(
                 adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
             ),
-            scope = viewModelScope
+            scope = viewModelScope,
+            logger = logger
         )
         coordinator = sessionCoordinator
         sessionCoordinator.start()
@@ -229,7 +222,7 @@ class NeuralFilterViewModel @Inject constructor(
             readout = current.readout,
             trackPoints = track.toList(),
             rawPoints = raw.toList(),
-            metrics = TrackMetrics.compute(smoothedEst, smoothedRef),
+            metrics = MetricsEvaluator.compute(smoothedEst, smoothedRef).toMetricsUiModel(),
             elapsedSeconds = current.elapsedSeconds
         )
     }
@@ -239,17 +232,16 @@ class NeuralFilterViewModel @Inject constructor(
         observationJob?.cancel()
         coordinator?.stop()
         resetTracks()
-        _neuralUiState.value = if (NetworkPersistenceManager.exists(context))
+        _neuralUiState.value = if (smootherRepository.exists())
             NeuralFilterUiState.ReadyToRun else NeuralFilterUiState.NotTrained
     }
 
     fun deleteTrainedNetwork() {
-        NetworkPersistenceManager.delete(context)
+        smootherRepository.delete()
         coordinator?.stop()
         _neuralUiState.value = NeuralFilterUiState.NotTrained
     }
 
-    // ── Result handlers ───────────────────────────────────────────────────────
     private fun updateCollectionUiState(
         result: FilterResult,
         filter: KalmanFilter,
@@ -294,7 +286,6 @@ class NeuralFilterViewModel @Inject constructor(
         )
     }
 
-    // ── Builders / utils ──────────────────────────────────────────────────────
     private fun buildInput(
         result: FilterResult,
         obs: Observation?,

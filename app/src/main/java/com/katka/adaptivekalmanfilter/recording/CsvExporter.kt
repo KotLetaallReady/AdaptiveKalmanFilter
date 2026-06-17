@@ -15,14 +15,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-/**
- * Пишет список [ComparisonRow] в CSV и сохраняет в Downloads.
- *
- * Android 10+  — MediaStore (не нужен WRITE_EXTERNAL_STORAGE)
- * Android 9-   — прямая запись в Environment.DIRECTORY_DOWNLOADS
- *
- * Возвращает Uri файла, который можно передать в Intent.ACTION_SEND.
- */
+/** Writes [ComparisonRow]s to a CSV in Downloads (MediaStore on Android 10+, direct file otherwise). */
 object CsvExporter {
 
     private val HEADER = listOf(
@@ -33,10 +26,7 @@ object CsvExporter {
         "smoothed_lat", "smoothed_lon", "alpha"
     ).joinToString(",")
 
-    /**
-     * Сохраняет CSV и возвращает Uri.
-     * Вызывать из IO-диспетчера.
-     */
+    /** Writes the rows to a CSV and returns its Uri; call from an IO dispatcher. */
     fun export(context: Context, rows: List<ComparisonRow>): Uri {
         val fileName = "kalman_comparison_${timestamp()}.csv"
         val csv      = buildCsv(rows)
@@ -48,7 +38,7 @@ object CsvExporter {
         }
     }
 
-    /** Запускает стандартный Android share sheet для файла. */
+    /** Opens the Android share sheet for the file. */
     fun share(context: Context, uri: Uri) {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type     = "text/csv"
@@ -61,7 +51,6 @@ object CsvExporter {
         })
     }
 
-    // ── Builders ──────────────────────────────────────────────────────────────
 
     private fun buildCsv(rows: List<ComparisonRow>): String {
         val sb = StringBuilder()
@@ -70,22 +59,18 @@ object CsvExporter {
             sb.appendLine(buildString {
                 append(r.stepIndex);       append(',')
                 append(r.timestampMs);     append(',')
-                // Сырой GPS
                 append(f8(r.rawLat));      append(',')
                 append(f8(r.rawLon));      append(',')
                 append(f2(r.gpsAccuracyM.toDouble())); append(',')
                 append(f2(r.gpsSpeedMs.toDouble()));    append(',')
-                // Классический фильтр Калмана (центральная точка)
                 append(f8(r.kfLat));       append(',')
                 append(f8(r.kfLon));       append(',')
                 append(f4(r.kfVx));        append(',')
                 append(f4(r.kfVy));        append(',')
                 append(f3(r.kfSigmaPos));  append(',')
                 append(f3(r.kfInnov));     append(',')
-                // Савицкий-Голей
                 append(f8(r.sgLat));       append(',')
                 append(f8(r.sgLon));       append(',')
-                // Нейросглаживатель
                 append(f8(r.smoothedLat)); append(',')
                 append(f8(r.smoothedLon)); append(',')
                 append(f4(r.alpha))
@@ -94,7 +79,6 @@ object CsvExporter {
         return sb.toString()
     }
 
-    // ── Android 10+ ───────────────────────────────────────────────────────────
 
     private fun exportViaMediaStore(context: Context, fileName: String, csv: String): Uri {
         val resolver = context.contentResolver
@@ -115,7 +99,6 @@ object CsvExporter {
         return uri
     }
 
-    // ── Android 9 и ниже ─────────────────────────────────────────────────────
 
     private fun exportViaFile(context: Context, fileName: String, csv: String): Uri {
         val dir  = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -123,7 +106,6 @@ object CsvExporter {
         val file = File(dir, fileName)
         file.writeText(csv)
 
-        // FileProvider нужен чтобы другие приложения могли читать файл
         return FileProvider.getUriForFile(
             context,
             "${context.packageName}.provider",
@@ -131,7 +113,6 @@ object CsvExporter {
         )
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private fun OutputStream.write(text: String) = write(text.toByteArray(Charsets.UTF_8))
 
