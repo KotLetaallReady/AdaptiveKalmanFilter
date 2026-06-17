@@ -1,11 +1,8 @@
 package com.katka.adaptivekalmanfilter.ui.menu_screen
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.katka.engine.neural.NetworkPersistenceManager
+import com.katka.engine.neural.SmootherRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,7 +15,7 @@ data class MenuUiState(
 
 @HiltViewModel
 class MenuViewModel @Inject constructor(
-    @ApplicationContext private val context: Context
+    private val smootherRepository: SmootherRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MenuUiState())
@@ -39,7 +36,7 @@ class MenuViewModel @Inject constructor(
 
     fun refreshNeuralReady() {
         _uiState.value = _uiState.value.copy(
-            isNeuralReady = NetworkPersistenceManager.exists(context)
+            isNeuralReady = smootherRepository.exists()
         )
     }
 }

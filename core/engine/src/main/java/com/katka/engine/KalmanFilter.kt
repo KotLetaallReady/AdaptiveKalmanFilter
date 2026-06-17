@@ -7,86 +7,30 @@ import com.katka.engine.model.KalmanState
 import com.katka.model.Observation
 import kotlin.math.cos
 
-
-/**
- * Classical discrete-time Kalman filter for 2-D pedestrian / vehicle tracking.
- *
- * ── State vector ─────────────────────────────────────────────────────────────
- *
- *   x = [x, y, vx, vy]ᵀ       (n = 4)
- *     x, y  — local metric position (metres, relative to a fixed reference point)
- *     vx,vy — velocity (m/s), estimated by the filter
- *
- * ── Measurement vector ───────────────────────────────────────────────────────
- *
- *   z = [x_gps, y_gps]ᵀ       (m = 2)
- *
- *   GPS provides only position; velocity is inferred through process dynamics.
- *
- * ── Prediction step ─────────────────────────────────────────────────────────
- *
- *   x̂_k|k-1 = F·x̂_k-1|k-1 + B·u_k
- *   P_k|k-1  = F·P_k-1|k-1·Fᵀ + Q
- *
- *   F — constant-velocity transition matrix (depends on dt)
- *   B — control-input matrix (maps IMU acceleration to state increment)
- *   u — control input = [ax, ay]ᵀ from IMU (zero when hasImu == false)
- *   Q — process noise covariance (continuous white-noise acceleration model)
- *
- * ── Update step ──────────────────────────────────────────────────────────────
- *
- *   K is produced by the injected [com.katka.engine.coefficient_startegy.CoefficientStrategy]:
- *     K = P_pred·Hᵀ·S⁻¹          (classical, computed inside the strategy)
- *
- *   State update:
- *     x̂_k|k = x̂_k|k-1 + K·(z_k − H·x̂_k|k-1)
- *
- *   Covariance update uses the numerically robust Joseph form (inside strategy).
- *
- * ── Coordinate handling ─────────────────────────────────────────────────────
- *
- *   The filter works entirely in a local Euclidean plane whose origin is the
- *   first GPS fix (reference point).  [geoToLocal] / [localToGeo] convert
- *   between WGS-84 and local metres using the equirectangular approximation
- *   (error < 0.1 % within 100 km of the reference point).
- *
- * @param processNoiseStd Spectral density of the acceleration process noise σ_a (m/s²).
- *                        Larger → filter trusts sensor more, follows GPS tightly.
- *                        Smaller → smoother but slower to react to turns/stops.
- *                        Typical range: 0.05 – 2.0.
- */
+/** Discrete-time constant-velocity Kalman filter for 2-D tracking, with IMU control input and a local equirectangular projection. */
 class KalmanFilter(
     private val processNoiseStd: Double = 0.5
 ) {
-    // ── Internal state ───────────────────────────────────────────────────────
-
     private var state: KalmanState? = null
     private var lastTimestamp: Long = -1L
-
     private var lastWallClockMs: Long = -1L
 
-    /** Reference geographic point — origin of the local coordinate system. */
+    /** Reference latitude — origin of the local coordinate system. */
     var refLat: Double = 0.0
         private set
+
+    /** Reference longitude — origin of the local coordinate system. */
     var refLon: Double = 0.0
         private set
 
     val isInitialised: Boolean get() = state != null
 
-    // ── Measurement matrix H (fixed, 2×4) ────────────────────────────────────
-    //   Selects [x, y] from [x, y, vx, vy]
     private val H: Array<DoubleArray> = arrayOf(
         doubleArrayOf(1.0, 0.0, 0.0, 0.0),
         doubleArrayOf(0.0, 1.0, 0.0, 0.0)
     )
 
-    // ── Public API ───────────────────────────────────────────────────────────
-
-    /**
-     * Reset everything.  Call this at the start of a new tracking session.
-     * Passes [com.katka.engine.coefficient_startegy.CoefficientStrategy.reset] down to the strategy so it can flush
-     * its own internal buffers (e.g. an adaptive-R window).
-     */
+    /** Clears all state and the reference point, and resets the strategy, for a new session. */
     fun reset(strategy: CoefficientStrategy? = null) {
         state = null
         lastTimestamp   = -1L
@@ -96,17 +40,7 @@ class KalmanFilter(
         strategy?.reset()
     }
 
-
-    /**
-     * Process one observation.
-     *
-     * On the very first call the filter initialises itself from the GPS fix and
-     * returns a [FilterResult] whose [FilterResult.dt] is 0.
-     *
-     * @param obs      Raw sensor observation.
-     * @param strategy How to compute the Kalman gain K (classical or neural).
-     * @return         Posterior state and diagnostics for this step.
-     */
+    /** Processes one observation and returns the posterior state with diagnostics; initialises on the first call. */
     fun process(obs: Observation, strategy: CoefficientStrategy): FilterResult {
         if (!isInitialised) {
             return initialise(obs)
@@ -150,7 +84,6 @@ class KalmanFilter(
             innovation[0] * innovation[0] + innovation[1] * innovation[1]
         )
 
-        // ИЗМЕНЕНО: было coerceAtLeast(50.0), теперь coerceIn(15.0, 80.0)
         val gateThreshold = (xPred.positionUncertaintyMeters * 5.0).coerceIn(15.0, 80.0)
 
         if (innovationMag > gateThreshold) {
@@ -209,17 +142,12 @@ class KalmanFilter(
             filterMode        = FilterMode.CLASSICAL,
             dt                = dt
         )
-    }    /** Return the current posterior estimate without processing a new observation. */
+    }
+
+    /** Returns the current posterior estimate without processing a new observation. */
     fun getCurrentState(): KalmanState? = state
 
-    // ── Coordinate conversion ────────────────────────────────────────────────
-
-    /**
-     * WGS-84 → local Euclidean metres (equirectangular projection).
-     *
-     *   x = R · Δlon · cos(lat_ref)    (East direction, metres)
-     *   y = R · Δlat                   (North direction, metres)
-     */
+    /** Converts WGS-84 degrees to local metres (equirectangular projection about the reference point). */
     fun geoToLocal(lat: Double, lon: Double): Pair<Double, Double> {
         val R = EARTH_RADIUS_M
         val dLat = Math.toRadians(lat - refLat)
@@ -229,7 +157,7 @@ class KalmanFilter(
         return x to y
     }
 
-    /** Local metres → WGS-84 (inverse of [geoToLocal]). */
+    /** Converts local metres back to WGS-84 degrees (inverse of [geoToLocal]). */
     fun localToGeo(x: Double, y: Double): Pair<Double, Double> {
         val R = EARTH_RADIUS_M
         val lat = refLat + Math.toDegrees(y / R)
@@ -237,8 +165,7 @@ class KalmanFilter(
         return lat to lon
     }
 
-    // ── Private helpers ──────────────────────────────────────────────────────
-
+    /** Initialises the filter and reference point from the first GPS fix. */
     private fun initialise(obs: Observation): FilterResult {
         refLat = obs.latitude
         refLon = obs.longitude
@@ -248,7 +175,6 @@ class KalmanFilter(
         val initState = KalmanState.initial(x = 0.0, y = 0.0, posVariance = posVariance)
         state = initState
 
-        // Dummy result — no prediction or update on the very first step
         val zeroR = MatrixOps.zeros(2, 2)
         return FilterResult(
             timestamp = obs.timestamp,
@@ -263,31 +189,7 @@ class KalmanFilter(
         )
     }
 
-    /**
-     * Prediction equations:
-     *   x̂_pred = F·x̂ + B·u
-     *   P_pred  = F·P·Fᵀ + Q
-     *
-     * F — constant-velocity state transition (dt-dependent):
-     *   ┌ 1  0  dt  0  ┐
-     *   │ 0  1  0   dt │
-     *   │ 0  0  1   0  │
-     *   └ 0  0  0   1  ┘
-     *
-     * B — control-input matrix that maps [ax, ay] to state increment:
-     *   ┌ ½dt²  0    ┐
-     *   │ 0     ½dt² │
-     *   │ dt    0    │
-     *   └ 0     dt   ┘
-     *
-     * Q — continuous white-noise acceleration model (σ_a²·Γ·Γᵀ):
-     *   where Γ = [½dt², ½dt², dt, dt]ᵀ  per axis
-     *
-     *   Q =  σ_a² · ┌ dt⁴/4  0      dt³/2  0     ┐
-     *               │ 0      dt⁴/4  0      dt³/2  │
-     *               │ dt³/2  0      dt²    0       │
-     *               └ 0      dt³/2  0      dt²     ┘
-     */
+    /** Prediction step: extrapolates state and covariance with the constant-velocity model plus the IMU control input. */
     private fun predict(
         s: KalmanState,
         dt: Double,
@@ -312,7 +214,6 @@ class KalmanFilter(
             doubleArrayOf(dt,      0.0    ),
             doubleArrayOf(0.0,     dt     )
         )
-
 
         val u = if (obs.hasImu && obs.hasRotation)
             doubleArrayOf(obs.axGeo, obs.ayGeo)

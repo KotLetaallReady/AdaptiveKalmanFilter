@@ -41,7 +41,7 @@ import com.katka.adaptivekalmanfilter.model.TrackPoint
 @Composable
 fun FilterScreen(
     uiState: FilterUiState,
-    onStart: () -> Unit,          // ДОБАВИТЬ
+    onStart: () -> Unit,
     onStop:  () -> Unit,
     onReset: () -> Unit
 ) {
@@ -62,7 +62,6 @@ fun FilterScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             when (uiState) {
-                // ДОБАВИТЬ: состояние Idle — показываем онбординг
                 is FilterUiState.Idle -> {
                     IdleContent()
                 }
@@ -123,7 +122,6 @@ fun FilterScreen(
     }
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun FilterHeader(uiState: FilterUiState) {
@@ -161,7 +159,6 @@ private fun FilterHeader(uiState: FilterUiState) {
             verticalAlignment      = Alignment.CenterVertically,
             horizontalArrangement  = Arrangement.spacedBy(10.dp)
         ) {
-            // Пульсирующий индикатор статуса
             if (isRunning) PulsingDot()
 
             Text(
@@ -193,7 +190,6 @@ private fun PulsingDot() {
     )
 }
 
-// ── Track Canvas ──────────────────────────────────────────────────────────────
 
 @Composable
 private fun TrackCanvas(
@@ -210,7 +206,6 @@ private fun TrackCanvas(
             .border(1.dp, Divider, RoundedCornerShape(8.dp))
     ) {
         if (filteredPoints.isEmpty()) {
-            // Заглушка — ожидание первого фикса
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     text  = "Ожидание GPS...",
@@ -222,7 +217,6 @@ private fun TrackCanvas(
                 val all = filteredPoints + rawPoints
                 drawGrid()
 
-                // Нормализация в экранные координаты
                 fun normalize(pts: List<TrackPoint>): List<Offset> {
                     if (pts.isEmpty()) return emptyList()
                     val minX = all.minOf { it.x }
@@ -244,15 +238,12 @@ private fun TrackCanvas(
                 val filteredOffsets = normalize(filteredPoints)
                 val rawOffsets      = normalize(rawPoints)
 
-                // Сырой GPS — янтарный пунктир (точки)
                 for (o in rawOffsets) {
                     drawCircle(RawAmber.copy(alpha = 0.45f), radius = 2.5f, center = o)
                 }
 
-                // Filtered — зелёная линия
                 drawPolyline(filteredOffsets, SignalGreen, strokeWidth = 2f)
 
-                // Последняя точка — маркер позиции
                 filteredOffsets.lastOrNull()?.let { last ->
                     drawCircle(SignalGreen, radius = 6f, center = last)
                     drawCircle(Background,   radius = 3f, center = last)
@@ -260,7 +251,6 @@ private fun TrackCanvas(
             }
         }
 
-        // Легенда
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
@@ -306,7 +296,6 @@ private fun LegendItem(color: Color, label: String) {
     }
 }
 
-// ── Readout Grid ──────────────────────────────────────────────────────────────
 
 @Composable
 private fun KalmanReadoutGrid(r: KalmanReadout) {
@@ -340,11 +329,9 @@ private fun KalmanReadoutGrid(r: KalmanReadout) {
     }
 }
 
-// ── K-gain Bar ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun GainBar(label: String, value: Double) {
-    // K ∈ [0, 1] теоретически, но clamp для надёжности
     val clamped = value.coerceIn(0.0, 1.0).toFloat()
     val animatedWidth by animateFloatAsState(
         targetValue   = clamped,
@@ -381,7 +368,6 @@ private fun GainBar(label: String, value: Double) {
     }
 }
 
-// ── Innovation Indicator ──────────────────────────────────────────────────────
 
 @Composable
 private fun InnovationIndicator(magnitudeM: Double) {
@@ -406,7 +392,6 @@ private fun InnovationIndicator(magnitudeM: Double) {
             Spacer(modifier = Modifier.height(4.dp))
             Text("%.3f м".format(magnitudeM), style = ReadoutLargeStyle.copy(color = color))
         }
-        // Светофор качества
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -427,7 +412,6 @@ private fun InnovationIndicator(magnitudeM: Double) {
     }
 }
 
-// ── Metrics Panel (Finished) ──────────────────────────────────────────────────
 
 @Composable
 private fun MetricsPanel(metrics: MetricsUiModel) {
@@ -468,12 +452,11 @@ private fun MetricCell(label: String, value: String, color: Color, modifier: Mod
     }
 }
 
-// ── Bottom bar ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun BottomActionBar(
     uiState:  FilterUiState,
-    onStart:  () -> Unit,      // ДОБАВИТЬ
+    onStart:  () -> Unit,
     onStop:   () -> Unit,
     onReset:  () -> Unit,
     modifier: Modifier = Modifier
@@ -488,7 +471,6 @@ private fun BottomActionBar(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             when (uiState) {
-                // ДОБАВИТЬ: кнопка старта для Idle
                 is FilterUiState.Idle -> {
                     Button(
                         onClick  = onStart,
@@ -563,7 +545,6 @@ private fun BottomActionBar(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SectionLabel(text: String) {

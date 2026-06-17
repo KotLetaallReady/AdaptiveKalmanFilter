@@ -1,20 +1,19 @@
 package com.katka.adaptivekalmanfilter.ui.classical_filter
 
-import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.katka.adaptivekalmanfilter.model.FilterUiState
 import com.katka.adaptivekalmanfilter.model.KalmanReadout
 import com.katka.adaptivekalmanfilter.model.MetricsUiModel
 import com.katka.adaptivekalmanfilter.model.TrackPoint
-import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
+import com.katka.android.AndroidSensorDataSource
 import com.katka.engine.KalmanFilter
 import com.katka.engine.KalmanFilterCoordinator
+import com.katka.engine.Logger
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
 import com.katka.engine.model.FilterResult
 import com.katka.model.AccuracyMetrics
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import jakarta.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,10 +29,9 @@ private const val MAX_TRACK_POINTS = 500
 @HiltViewModel
 class ClassicalFilterViewModel @Inject constructor(
     private val sensorDataSource: AndroidSensorDataSource,
-    @ApplicationContext private val context: Context
+    private val logger: Logger
 ) : ViewModel() {
 
-    // ── Классический фильтр ───────────────────────────────────────────────────
     private val classicalFilter = KalmanFilter(processNoiseStd = 0.1)
     private val classicalStrategy = ClassicalCoefficientStrategy(
         adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
@@ -42,21 +40,19 @@ class ClassicalFilterViewModel @Inject constructor(
         sensorSource = sensorDataSource,
         filter = classicalFilter,
         strategy = classicalStrategy,
-        scope = viewModelScope
+        scope = viewModelScope,
+        logger = logger
     )
 
-    // ── Треки ─────────────────────────────────────────────────────────────────
     private val classicalTrack = mutableListOf<TrackPoint>()
     private val classicalRaw = mutableListOf<TrackPoint>()
     private var sessionStartMs = 0L
 
-    // ── UI-состояния ──────────────────────────────────────────────────────────
     private val _uiState = MutableStateFlow<FilterUiState>(FilterUiState.Idle)
     val uiState: StateFlow<FilterUiState> = _uiState.asStateFlow()
 
     private var classicalResultsJob: Job? = null
 
-    // ── Разрешения ────────────────────────────────────────────────────────────
     fun onPermissionGranted() {
         if (_uiState.value is FilterUiState.NeedsPermission)
             _uiState.value = FilterUiState.Idle
@@ -66,7 +62,6 @@ class ClassicalFilterViewModel @Inject constructor(
         _uiState.value = FilterUiState.NeedsPermission
     }
 
-    // ── Классическая сессия ───────────────────────────────────────────────────
     fun startSession() {
         classicalTrack.clear(); classicalRaw.clear()
         sessionStartMs = System.currentTimeMillis()
@@ -101,7 +96,6 @@ class ClassicalFilterViewModel @Inject constructor(
         _uiState.value = FilterUiState.Idle
     }
 
-    // ── Приватные обработчики ─────────────────────────────────────────────────
     private fun handleClassicalResult(result: FilterResult) {
         if (result.dt == 0.0) return
         val filtered = TrackPoint(result.state.x.toFloat(), result.state.y.toFloat())
@@ -123,7 +117,6 @@ class ClassicalFilterViewModel @Inject constructor(
         )
     }
 
-    // ── Утилиты ───────────────────────────────────────────────────────────────
     private fun buildReadout(
         result: FilterResult,
         filter: KalmanFilter,

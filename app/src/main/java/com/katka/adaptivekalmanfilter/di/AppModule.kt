@@ -1,7 +1,12 @@
 package com.katka.adaptivekalmanfilter.di
 
 import android.content.Context
-import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
+import com.katka.android.AndroidLogger
+import com.katka.android.AndroidSensorDataSource
+import com.katka.android.FileSmootherStore
+import com.katka.engine.Logger
+import com.katka.engine.neural.SmootherRepository
+import com.katka.engine.neural.SmootherStore
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -13,14 +18,7 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    /**
-     * [AndroidSensorDataSource] живёт в Singleton-скоупе — один экземпляр
-     * на всё приложение.  Это важно: FusedLocationProviderClient и
-     * SensorManager дорого создавать, а переподписка на GPS при ротации
-     * экрана нежелательна.
-     *
-     * ViewModel держит ссылку на source и вызывает start()/stop() сама.
-     */
+    /** Single app-wide [AndroidSensorDataSource]; the GPS/sensor clients are costly to create and re-subscribe. */
     @Provides
     @Singleton
     fun provideAndroidSensorDataSource(
@@ -30,4 +28,22 @@ object AppModule {
         gpsIntervalMs      = 1_000L,
         minDisplacementM   = 0f
     )
+
+
+    /** File-backed [SmootherStore] — the engine's persistence boundary. */
+    @Provides
+    @Singleton
+    fun provideSmootherStore(
+        @ApplicationContext context: Context
+    ): SmootherStore = FileSmootherStore(context)
+
+    @Provides
+    @Singleton
+    fun provideSmootherRepository(store: SmootherStore): SmootherRepository =
+        SmootherRepository(store)
+
+    /** Routes engine logging to Logcat (the engine itself is Android-free). */
+    @Provides
+    @Singleton
+    fun provideLogger(): Logger = AndroidLogger()
 }

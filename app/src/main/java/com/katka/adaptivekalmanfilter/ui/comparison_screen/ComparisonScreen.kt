@@ -65,7 +65,6 @@ fun ComparisonScreen(
     }
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun ComparisonHeader(uiState: ComparisonUiState) {
@@ -117,7 +116,6 @@ private fun ComparisonHeader(uiState: ComparisonUiState) {
     }
 }
 
-// ── Контент по состояниям ─────────────────────────────────────────────────────
 
 @Composable
 private fun NeuralNotTrainedContent() {
@@ -142,13 +140,11 @@ private fun IdleComparisonContent() {
                     "После остановки данные сохраняются в Downloads как CSV.",
             color   = NeuralCyan
         )
-        // Легенда цветов
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             LegendChip("Калман", ClassGreen, Modifier.weight(1f))
             LegendChip("Сглажено", NeuralCyan, Modifier.weight(1f))
             LegendChip("GPS raw", RawAmber, Modifier.weight(1f))
         }
-        // Что будет в CSV
         InfoCard(
             title   = "СОДЕРЖИМОЕ CSV",
             content = "step · timestamp · raw_lat/lon · gps_accuracy · gps_speed · " +
@@ -165,7 +161,6 @@ private fun RunningContent(state: ComparisonUiState.Running) {
         modifier = Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Счётчик шагов
         Row(
             Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(8.dp))
@@ -180,14 +175,12 @@ private fun RunningContent(state: ComparisonUiState.Running) {
             )
         }
 
-        // Двойной трек
         ComparisonTrackCanvas(
             classPoints  = state.trackPoints,
             neuralPoints = state.neuralPoints,
             rawPoints    = state.rawPoints
         )
 
-        // Параллельный readout
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterReadoutColumn(
                 label   = "КАЛМАН",
@@ -203,7 +196,6 @@ private fun RunningContent(state: ComparisonUiState.Running) {
             )
         }
 
-        // Статус нейросети
         NeuralStatusBadge(state.isNeuralActive)
     }
 }
@@ -220,7 +212,6 @@ private fun FinishedContent(state: ComparisonUiState.Finished, onShare: (Uri) ->
             rawPoints    = state.rawPoints
         )
 
-        // CSV статус
         val csvColor = if (state.exportedUri != null) SignalGreen else ErrorRed
         Row(
             Modifier.fillMaxWidth()
@@ -257,7 +248,6 @@ private fun FinishedContent(state: ComparisonUiState.Finished, onShare: (Uri) ->
             }
         }
 
-        // Метрики рядом
         Text(
             "МЕТРИКИ",
             style = ReadoutStyle.copy(fontSize = 9.sp, color = TextSecondary, letterSpacing = 3.sp)
@@ -282,7 +272,6 @@ private fun ErrorContent(message: String) {
     }
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
 
 @Composable
 private fun ComparisonTrackCanvas(
@@ -317,7 +306,6 @@ private fun ComparisonTrackCanvas(
                     Offset(cx + (p.x - mx) * scale, cy - (p.y - my) * scale)
                 }
 
-                // Сетка
                 val gc = Color(0xFF161C20)
                 repeat(5) { i ->
                     val x = size.width * i / 4f
@@ -325,10 +313,8 @@ private fun ComparisonTrackCanvas(
                     drawLine(gc, Offset(0f, x), Offset(size.width, x))
                 }
 
-                // Сырой GPS
                 norm(rawPoints).forEach { drawCircle(RawAmber.copy(0.35f), 2.5f, it) }
 
-                // Классика — зелёный
                 val cPts = norm(classPoints)
                 if (cPts.size >= 2) {
                     val path = Path().apply { moveTo(cPts[0].x, cPts[0].y); cPts.drop(1).forEach { lineTo(it.x, it.y) } }
@@ -336,7 +322,6 @@ private fun ComparisonTrackCanvas(
                 }
                 cPts.lastOrNull()?.let { drawCircle(ClassGreen, 6f, it); drawCircle(Background, 2.5f, it) }
 
-                // Нейросеть — голубой
                 val nPts = norm(neuralPoints)
                 if (nPts.size >= 2) {
                     val path = Path().apply { moveTo(nPts[0].x, nPts[0].y); nPts.drop(1).forEach { lineTo(it.x, it.y) } }
@@ -481,7 +466,6 @@ private fun LegendDot(color: Color, label: String) {
     }
 }
 
-// ── Bottom Bar ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun ComparisonBottomBar(

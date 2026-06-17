@@ -1,26 +1,14 @@
 package com.katka.engine.model
 
 import com.katka.engine.MatrixOps
-import com.katka.engine.model.KalmanState
 
-// ── FilterMode ───────────────────────────────────────────────────────────────
-
+/** Which strategy produced the Kalman gain. */
 enum class FilterMode {
-    /** Kalman gain K computed via the classical Riccati equations. */
     CLASSICAL,
-    /** Kalman gain K produced by a neural network (future). */
     NEURAL
 }
 
-// ── GainResult ───────────────────────────────────────────────────────────────
-
-/**
- * Output of a [core.engine.CoefficientStrategy].
- *
- * @property K          Kalman gain matrix  (n × m), n = state dim, m = measurement dim.
- * @property P_updated  Posterior error covariance (n × n) after Joseph-form update.
- * @property R          Measurement noise covariance (m × m) used in this step.
- */
+/** Output of a CoefficientStrategy: gain K, posterior covariance and the noise matrix R used this step. */
 data class GainResult(
     val K: Array<DoubleArray>,
     val P_updated: Array<DoubleArray>,
@@ -42,24 +30,7 @@ data class GainResult(
     }
 }
 
-// ── FilterResult ─────────────────────────────────────────────────────────────
-
-/**
- * Complete output produced by [core.engine.KalmanFilter.process] for one time step.
- *
- * In addition to the posterior state estimate, it exposes intermediate quantities
- * useful for debugging, diagnostics, and UI charting.
- *
- * @property timestamp          Unix epoch ms matching the input [com.katka.model.Observation].
- * @property state              Posterior state estimate x̂_k|k.
- * @property predicted          Prior (predicted) state x̂_k|k-1 before measurement update.
- * @property innovation         y = z − H·x̂_k|k-1  (residual vector, measurement-space).
- * @property innovationCovS     S = H·P_pred·Hᵀ + R (innovation covariance, m×m).
- * @property kalmanGain         K used this step (n × m).
- * @property measurementNoiseR  R matrix actually used (m × m).
- * @property filterMode         Which strategy produced K.
- * @property dt                 Time delta since previous step (seconds).
- */
+/** Complete result of one filter step: posterior and prior state plus diagnostics. */
 data class FilterResult(
     val timestamp: Long,
     val state: KalmanState,
@@ -71,9 +42,8 @@ data class FilterResult(
     val filterMode: FilterMode,
     val dt: Double
 ) {
-    /** Normalised Innovation Squared (NIS) — chi² statistic for filter consistency check. */
+    /** Normalised Innovation Squared (yᵀ·S⁻¹·y) — a chi² filter-consistency statistic. */
     val nis: Double by lazy {
-        // NIS = yᵀ · S⁻¹ · y
         try {
             val SInv = MatrixOps.inverse(innovationCovS)
             val SInvY = MatrixOps.mulVec(SInv, innovation)

@@ -6,16 +6,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.katka.adaptivekalmanfilter.model.ComparisonUiState
 import com.katka.adaptivekalmanfilter.model.KalmanReadout
-import com.katka.adaptivekalmanfilter.model.TrackMetrics
 import com.katka.adaptivekalmanfilter.model.TrackPoint
+import com.katka.adaptivekalmanfilter.model.toMetricsUiModel
 import com.katka.adaptivekalmanfilter.recording.CsvExporter
 import com.katka.adaptivekalmanfilter.recording.SessionRecorder
-import com.katka.adaptivekalmanfilter.sensor_data_source.AndroidSensorDataSource
+import com.katka.android.AndroidSensorDataSource
 import com.katka.engine.KalmanFilter
 import com.katka.engine.KalmanFilterCoordinator
+import com.katka.engine.Logger
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
+import com.katka.engine.metrics.MetricsEvaluator
 import com.katka.engine.model.FilterResult
-import com.katka.engine.neural.NetworkPersistenceManager
+import com.katka.engine.neural.SmootherRepository
 import com.katka.engine.smoothing.FeatureNormalizer
 import com.katka.engine.smoothing.NeuralTrajectorySmoother
 import com.katka.engine.smoothing.SmoothedSample
@@ -43,23 +45,23 @@ private const val MAX_TRACK_POINTS = 500
 @HiltViewModel
 class ComparisonViewModel @Inject constructor(
     private val sensorDataSource: AndroidSensorDataSource,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val smootherRepository: SmootherRepository,
+    private val logger: Logger
 ) : ViewModel() {
 
     private val sessionRecorder = SessionRecorder()
 
     private val _comparisonUiState = MutableStateFlow<ComparisonUiState>(
-        if (NetworkPersistenceManager.exists(context)) ComparisonUiState.Idle
+        if (smootherRepository.exists()) ComparisonUiState.Idle
         else ComparisonUiState.NeuralNotTrained
     )
     val comparisonUiState: StateFlow<ComparisonUiState> = _comparisonUiState.asStateFlow()
 
-    // Tracks for the canvas
     private val kfTrack = mutableListOf<TrackPoint>()
     private val smoothTrack = mutableListOf<TrackPoint>()
     private val rawTrack = mutableListOf<TrackPoint>()
 
-    // Accumulators (local metres) for metrics
     private val kfEst = mutableListOf<Pair<Double, Double>>()
     private val smoothEst = mutableListOf<Pair<Double, Double>>()
     private val rawRef = mutableListOf<Pair<Double, Double>>()
@@ -73,7 +75,7 @@ class ComparisonViewModel @Inject constructor(
     private var sessionStartMs = 0L
 
     fun startComparisonSession() {
-        val loaded = NetworkPersistenceManager.loadSmoother(context) ?: run {
+        val loaded = smootherRepository.load() ?: run {
             _comparisonUiState.value = ComparisonUiState.NeuralNotTrained
             return
         }
@@ -96,7 +98,8 @@ class ComparisonViewModel @Inject constructor(
             strategy = ClassicalCoefficientStrategy(
                 adaptiveR = true, adaptiveWindow = 40, minAccuracyM = 1f, maxAccuracyM = 50f
             ),
-            scope = viewModelScope
+            scope = viewModelScope,
+            logger = logger
         )
         coordinator = sessionCoordinator
         sessionCoordinator.start()
@@ -155,8 +158,8 @@ class ComparisonViewModel @Inject constructor(
 
         val current = _comparisonUiState.value as? ComparisonUiState.Running ?: return
 
-        val classMetrics = TrackMetrics.compute(kfEst, rawRef)
-        val neuralMetrics = TrackMetrics.compute(smoothEst, rawRef)
+        val classMetrics = MetricsEvaluator.compute(kfEst, rawRef).toMetricsUiModel()
+        val neuralMetrics = MetricsEvaluator.compute(smoothEst, rawRef).toMetricsUiModel()
 
         viewModelScope.launch(Dispatchers.IO) {
             val uri = try {
@@ -184,12 +187,12 @@ class ComparisonViewModel @Inject constructor(
         kfTrack.clear(); smoothTrack.clear(); rawTrack.clear()
         kfEst.clear(); smoothEst.clear(); rawRef.clear()
         sessionRecorder.reset()
-        _comparisonUiState.value = if (NetworkPersistenceManager.exists(context))
+        _comparisonUiState.value = if (smootherRepository.exists())
             ComparisonUiState.Idle else ComparisonUiState.NeuralNotTrained
     }
 
     fun refreshNetworkStatus() {
-        _comparisonUiState.value = if (NetworkPersistenceManager.exists(context)) {
+        _comparisonUiState.value = if (smootherRepository.exists()) {
             when (_comparisonUiState.value) {
                 is ComparisonUiState.Idle,
                 is ComparisonUiState.NeuralNotTrained,
@@ -205,7 +208,6 @@ class ComparisonViewModel @Inject constructor(
         CsvExporter.share(context, uri)
     }
 
-    // ── Builders / utils ──────────────────────────────────────────────────────
     private fun buildInput(
         result: FilterResult,
         obs: Observation?,

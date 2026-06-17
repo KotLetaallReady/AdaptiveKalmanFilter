@@ -35,8 +35,6 @@ class MainActivity : ComponentActivity() {
                         .statusBarsPadding()
                         .navigationBarsPadding()
                 ) {
-                    // Единый NavHost — ViewModel создаётся здесь и живёт
-                    // пока жив NavBackStackEntry корневого графа
                     AppNavigation()
                 }
             }

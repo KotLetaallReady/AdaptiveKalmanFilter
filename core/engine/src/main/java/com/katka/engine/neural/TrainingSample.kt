@@ -1,12 +1,6 @@
 package com.katka.engine.neural
 
-/**
- * One (features, labels) training pair consumed by [NeuralNetworkTrainer].
- *
- * For the trajectory smoother (diploma ch.3) `features` is the normalised
- * 6-feature context vector and `labels` is the single analytic optimal weight
- * α* ∈ [0,1].
- */
+/** One (features, labels) training pair consumed by [NeuralNetworkTrainer]. */
 data class TrainingSample(
     val features: DoubleArray,
     val labels: DoubleArray

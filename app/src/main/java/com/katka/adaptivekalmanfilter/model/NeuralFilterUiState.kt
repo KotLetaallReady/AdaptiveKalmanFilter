@@ -1,13 +1,14 @@
 package com.katka.adaptivekalmanfilter.model
 
+/** UI states of the neural-smoother workflow: collect → train → run. */
 sealed class NeuralFilterUiState {
 
     object NeedsPermission : NeuralFilterUiState()
 
-    /** Сети нет на диске — показываем онбординг */
+    /** No trained model on disk; show onboarding. */
     object NotTrained : NeuralFilterUiState()
 
-    /** Классический фильтр запущен для накопления обучающих пар */
+    /** Running the classical filter to collect training pairs. */
     data class CollectingData(
         val sampleCount: Int,
         val readout: KalmanReadout = KalmanReadout(),
@@ -19,7 +20,7 @@ sealed class NeuralFilterUiState {
         val isReadyToTrain: Boolean get() = sampleCount >= MIN_SAMPLES
     }
 
-    /** Adam-обучение идёт в фоне */
+    /** Adam training in progress. */
     data class Training(
         val epoch: Int,
         val totalEpochs: Int,
@@ -29,20 +30,20 @@ sealed class NeuralFilterUiState {
         val progress: Float get() = epoch.toFloat() / totalEpochs.coerceAtLeast(1)
     }
 
-    /** Сеть сохранена, готова к инференсу */
+    /** Model trained and ready to run. */
     object ReadyToRun : NeuralFilterUiState()
 
-    /** Нейросетевой фильтр работает в реальном времени */
+    /** Smoother running in real time. */
     data class Running(
         val readout: KalmanReadout,
         val trackPoints: List<TrackPoint>,
         val rawPoints: List<TrackPoint>,
         val elapsedSeconds: Int,
-        /** false → окно сглаживателя ещё не заполнено (первые ~L шагов), сглаживание не идёт */
+        /** false while the smoother window is still filling (first ~L steps). */
         val isSmoothing: Boolean = true
     ) : NeuralFilterUiState()
 
-    /** Сессия завершена */
+    /** Session finished. */
     data class Finished(
         val readout: KalmanReadout,
         val trackPoints: List<TrackPoint>,

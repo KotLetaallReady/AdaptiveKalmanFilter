@@ -19,7 +19,6 @@ import androidx.compose.ui.unit.sp
 import com.katka.adaptivekalmanfilter.design_system.*
 import com.katka.adaptivekalmanfilter.model.*
 
-// Акцентный цвет нейросетевого режима
 private val NeuralAccent = Color(0xFF00E5FF)
 private val NeuralDim    = Color(0xFF002A30)
 
@@ -70,7 +69,6 @@ fun NeuralFilterScreen(
     }
 }
 
-// ── Header ────────────────────────────────────────────────────────────────────
 
 @Composable
 private fun NeuralHeader(uiState: NeuralFilterUiState) {
@@ -140,7 +138,6 @@ private fun PulsingDot(color: Color) {
     Box(Modifier.size(8.dp).clip(CircleShape).background(color.copy(alpha = alpha)))
 }
 
-// ── Контент по состояниям ────────────────────────────────────────────────────
 
 @Composable
 private fun OnboardingContent() {
@@ -215,15 +212,12 @@ private fun CollectionContent(state: NeuralFilterUiState.CollectingData) {
         modifier = Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Прогресс-бар сбора образцов
         SampleProgressCard(state.sampleCount, NeuralFilterUiState.MIN_SAMPLES, state.progress)
 
-        // Мини-трек
         if (state.trackPoints.isNotEmpty()) {
             NeuralTrackCanvas(state.trackPoints, state.rawPoints)
         }
 
-        // Краткий readout
         SectionLabel("ВЕКТОР СОСТОЯНИЯ")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DataCell("Lat", "%.6f°".format(state.readout.filteredLat), SignalGreen, Modifier.weight(1f))
@@ -287,7 +281,6 @@ private fun TrainingContent(state: NeuralFilterUiState.Training) {
         modifier = Modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Эпоха + прогресс
         val animProg by animateFloatAsState(state.progress, tween(200), label = "ep")
         Column(
             modifier = Modifier
@@ -319,7 +312,6 @@ private fun TrainingContent(state: NeuralFilterUiState.Training) {
             }
         }
 
-        // График потерь
         if (state.lossHistory.size >= 2) {
             LossChart(state.lossHistory)
         }
@@ -347,13 +339,11 @@ private fun LossChart(lossHistory: List<Double>) {
             .border(1.dp, Divider, RoundedCornerShape(8.dp))
     ) {
         Canvas(Modifier.fillMaxSize().padding(12.dp)) {
-            // Сетка
             val gridColor = Color(0xFF161C20)
             repeat(4) { i ->
                 val y = size.height * i / 3f
                 drawLine(gridColor, Offset(0f, y), Offset(size.width, y))
             }
-            // Кривая потерь
             val pts = lossHistory.mapIndexed { i, loss ->
                 val x = i.toFloat() / (lossHistory.size - 1).coerceAtLeast(1) * size.width
                 val y = (1.0 - (loss - minL) / range).toFloat() * size.height
@@ -364,7 +354,6 @@ private fun LossChart(lossHistory: List<Double>) {
                     moveTo(pts[0].x, pts[0].y)
                     pts.drop(1).forEach { lineTo(it.x, it.y) }
                 }
-                // Заливка под кривой
                 val fillPath = Path().apply {
                     addPath(path)
                     lineTo(pts.last().x, size.height)
@@ -378,7 +367,6 @@ private fun LossChart(lossHistory: List<Double>) {
             }
             pts.lastOrNull()?.let { drawCircle(NeuralAccent, 4f, it) }
         }
-        // Подпись осей
         Text(
             text = "%.4f".format(maxL),
             style = ReadoutStyle.copy(fontSize = 8.sp, color = TextSecondary),
@@ -403,7 +391,6 @@ private fun ReadyContent() {
         modifier = Modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Статус готовности
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -441,13 +428,10 @@ private fun RunningContent(state: NeuralFilterUiState.Running) {
         modifier = Modifier.padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Бейдж режима сглаживания
         NeuralModeBadge(state.isSmoothing)
 
-        // Трек
         NeuralTrackCanvas(state.trackPoints, state.rawPoints)
 
-        // Показания (сглаженная центральная точка)
         SectionLabel("СГЛАЖЕННАЯ ТОЧКА")
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             DataCell("Lat", "%.6f°".format(state.readout.filteredLat), SignalGreen, Modifier.weight(1f))
@@ -467,7 +451,6 @@ private fun RunningContent(state: NeuralFilterUiState.Running) {
             DataCell("Точность", "%.1f м".format(state.readout.gpsAccuracyM), RawAmber, Modifier.weight(1f))
         }
 
-        // Инновация
         NeuralInnovationCard(state.readout.innovationMagnitude)
     }
 }
@@ -503,7 +486,6 @@ private fun ErrorContent(message: String) {
     }
 }
 
-// ── Sub-components ────────────────────────────────────────────────────────────
 
 @Composable
 private fun NeuralModeBadge(isSmoothing: Boolean) {
@@ -560,7 +542,6 @@ private fun NeuralTrackCanvas(filteredPoints: List<TrackPoint>, rawPoints: List<
                     Offset(cx + (p.x - mx) * scale, cy - (p.y - my) * scale)
                 }
 
-                // Сетка
                 val gc = Color(0xFF161C20)
                 repeat(5) { i ->
                     val x = size.width * i / 4f
@@ -568,10 +549,8 @@ private fun NeuralTrackCanvas(filteredPoints: List<TrackPoint>, rawPoints: List<
                     drawLine(gc, Offset(0f, size.width * i / 4f), Offset(size.width, size.width * i / 4f))
                 }
 
-                // Сырой GPS
                 norm(rawPoints).forEach { drawCircle(RawAmber.copy(0.4f), 2.5f, it) }
 
-                // Нейросетевой трек — cyan вместо зелёного
                 val fPts = norm(filteredPoints)
                 if (fPts.size >= 2) {
                     val path = Path().apply { moveTo(fPts[0].x, fPts[0].y); fPts.drop(1).forEach { lineTo(it.x, it.y) } }
@@ -704,7 +683,6 @@ private fun NeuralInfoCard(title: String, content: String) {
     }
 }
 
-// ── Bottom Bar ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun NeuralBottomBar(
@@ -793,7 +771,6 @@ private fun NeuralActionButton(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 @Composable
 private fun SectionLabel(text: String) {

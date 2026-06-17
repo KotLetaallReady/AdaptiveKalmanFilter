@@ -52,7 +52,6 @@ fun MenuScreen(
             verticalArrangement = Arrangement.spacedBy(20.dp),
             modifier = Modifier.padding(horizontal = 32.dp)
         ) {
-            // ── Заголовок ─────────────────────────────────────────────────────
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
                     text  = "ADAPTIVE",
@@ -75,7 +74,6 @@ fun MenuScreen(
                 )
             }
 
-            // ── Плитки характеристик ──────────────────────────────────────────
             Row(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -85,10 +83,8 @@ fun MenuScreen(
                 InfoTile("РЕЖИМЫ",    "KF + NN",    Modifier.weight(1f))
             }
 
-            // ── Баннер разрешения ─────────────────────────────────────────────
             if (needsPerm) PermissionBanner()
 
-            // ── Кнопка: Классический фильтр ───────────────────────────────────
             FilterModeButton(
                 label       = if (needsPerm) "ВЫДАТЬ РАЗРЕШЕНИЕ" else "КЛАССИЧЕСКИЙ ФИЛЬТР",
                 description = "Уравнения Риккати · Sage-Husa R",
@@ -100,7 +96,6 @@ fun MenuScreen(
                 }
             )
 
-            // ── Кнопка: Нейросетевой фильтр ───────────────────────────────────
             FilterModeButton(
                 label       = "НЕЙРОСЕТЕВОЙ ФИЛЬТР",
                 description = "MLP · обучение на маршруте · offline",
@@ -113,7 +108,6 @@ fun MenuScreen(
                 enabled = !needsPerm
             )
 
-            // ── Кнопка: Сравнение фильтров ────────────────────────────────────
             FilterModeButton(
                 label       = "СРАВНЕНИЕ ФИЛЬТРОВ",
                 description = "Параллельный запуск · экспорт CSV",
@@ -126,13 +120,11 @@ fun MenuScreen(
                 enabled = !needsPerm
             )
 
-            // ── Карточка алгоритмов ───────────────────────────────────────────
             AlgorithmCard()
         }
     }
 }
 
-// ── Компоненты ────────────────────────────────────────────────────────────────
 
 @Composable
 private fun FilterModeButton(
