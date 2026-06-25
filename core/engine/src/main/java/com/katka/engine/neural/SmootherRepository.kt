@@ -1,6 +1,11 @@
 package com.katka.engine.neural
 
-/** Loads and saves the trained smoother through a [SmootherStore], (de)serialising via [SmootherCodec]. */
+/**
+ * Repository for a persisted neural smoother model.
+ *
+ * The repository owns serialization and delegates the actual storage mechanism
+ * to [SmootherStore], allowing Android files, memory stores or custom backends.
+ */
 class SmootherRepository(private val store: SmootherStore) {
 
     /** Whether a trained model is available. */

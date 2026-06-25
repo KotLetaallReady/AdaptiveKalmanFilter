@@ -3,7 +3,6 @@ package com.katka.engine
 import com.katka.data.SensorDataSource
 import com.katka.engine.coefficient_startegy.ClassicalCoefficientStrategy
 import com.katka.engine.coefficient_startegy.CoefficientStrategy
-import com.katka.engine.KalmanFilter
 import com.katka.model.AccuracyMetrics
 import com.katka.engine.model.FilterMode
 import com.katka.engine.model.FilterResult
@@ -13,7 +12,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 
-/** Drives a tracking session: collects observations, runs the Kalman filter, and exposes results as a hot Flow. */
+/**
+ * High-level session runner for the Kalman filter.
+ *
+ * The coordinator starts a [SensorDataSource], collects observations on the
+ * supplied dispatcher, feeds them through [filter] with [strategy] and exposes
+ * processed [FilterResult] values as a shared [Flow].
+ *
+ * @param sensorSource Source that provides GPS/IMU observations.
+ * @param filter Stateful Kalman filter instance used for the session.
+ * @param strategy Strategy that builds the Kalman gain and measurement noise.
+ * @param scope Coroutine scope that owns the shared result stream.
+ * @param dispatcher Dispatcher used for observation processing.
+ * @param filterMode Label stored in diagnostics for the selected filter mode.
+ * @param logger Optional logger for session diagnostics.
+ */
 class KalmanFilterCoordinator(
     private val sensorSource: SensorDataSource,
     val filter: KalmanFilter,
@@ -46,7 +59,12 @@ class KalmanFilterCoordinator(
     private var sessionStartMs   = 0L
     private var lastObsTimestamp = 0L
 
-    /** Hot Flow of per-step filter results, shared while subscribed. */
+    /**
+     * Shared stream of per-step filter results.
+     *
+     * The stream starts collecting from [sensorSource] while it has subscribers
+     * and replays the latest result to new subscribers.
+     */
     val results: Flow<FilterResult> = flow {
         sensorSource.observations.collect { obs ->
             val result = processObservation(obs)
@@ -104,7 +122,13 @@ class KalmanFilterCoordinator(
         })
     }
 
-    /** Computes accuracy metrics of the filtered track against the raw GPS track. */
+    /**
+     * Computes current-session metrics against the raw GPS track.
+     *
+     * This is mainly useful for diagnostics and demos where raw GPS is used as
+     * the available reference. For a true benchmark, use a separate ground-truth
+     * reference with `MetricsEvaluator`.
+     */
     fun computeMetrics(): AccuracyMetrics {
         if (resultHistory.size < 2 || rawGpsHistory.size < 2) return AccuracyMetrics.EMPTY
         val n = minOf(resultHistory.size, rawGpsHistory.size)

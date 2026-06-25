@@ -2,13 +2,22 @@ package com.katka.engine.model
 
 import com.katka.engine.MatrixOps
 
-/** Which strategy produced the Kalman gain. */
+/** Filter mode label stored in [FilterResult] diagnostics. */
 enum class FilterMode {
+    /** Classical Kalman gain computed from covariance and measurement noise. */
     CLASSICAL,
+
+    /** Neural or learned mode used by consumers that extend the engine. */
     NEURAL
 }
 
-/** Output of a CoefficientStrategy: gain K, posterior covariance and the noise matrix R used this step. */
+/**
+ * Output of a Kalman-gain strategy for one correction step.
+ *
+ * @property K Kalman gain matrix.
+ * @property P_updated Posterior covariance after the measurement update.
+ * @property R Measurement-noise covariance used for this observation.
+ */
 data class GainResult(
     val K: Array<DoubleArray>,
     val P_updated: Array<DoubleArray>,
@@ -30,7 +39,19 @@ data class GainResult(
     }
 }
 
-/** Complete result of one filter step: posterior and prior state plus diagnostics. */
+/**
+ * Complete result of one filter step.
+ *
+ * @property timestamp Observation timestamp in milliseconds.
+ * @property state Posterior state after the correction step.
+ * @property predicted Prior state produced by the prediction step.
+ * @property innovation Measurement residual vector `z - Hx`.
+ * @property innovationCovS Innovation covariance matrix `S = HPH^T + R`.
+ * @property kalmanGain Kalman gain matrix used for the correction.
+ * @property measurementNoiseR Measurement-noise covariance used for the step.
+ * @property filterMode Diagnostic label of the active filter mode.
+ * @property dt Time delta used by the prediction step, in seconds.
+ */
 data class FilterResult(
     val timestamp: Long,
     val state: KalmanState,
@@ -42,7 +63,7 @@ data class FilterResult(
     val filterMode: FilterMode,
     val dt: Double
 ) {
-    /** Normalised Innovation Squared (yᵀ·S⁻¹·y) — a chi² filter-consistency statistic. */
+    /** Normalised Innovation Squared, a chi-square consistency statistic for the filter step. */
     val nis: Double by lazy {
         try {
             val SInv = MatrixOps.inverse(innovationCovS)

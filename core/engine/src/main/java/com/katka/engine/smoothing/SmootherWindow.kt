@@ -1,7 +1,7 @@
 package com.katka.engine.smoothing
 
-/** Sliding window of the last [SmootherFeatures.L] filter points — the shared state for both training and inference. */
-class SmootherWindow(private val length: Int = SmootherFeatures.L) {
+/** Internal sliding window shared by smoother training and inference. */
+internal class SmootherWindow(private val length: Int = SmootherFeatures.L) {
 
     private val buf = ArrayDeque<SmootherInput>(length)
 

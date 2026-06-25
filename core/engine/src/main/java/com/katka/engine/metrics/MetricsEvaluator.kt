@@ -3,10 +3,20 @@ package com.katka.engine.metrics
 import com.katka.model.AccuracyMetrics
 import kotlin.math.sqrt
 
-/** Computes accuracy metrics (RMSE, MAE, max error, jitter, cross-correlation lag) of an estimate track against a reference. */
+/**
+ * Utility for comparing estimated tracks against a reference track.
+ *
+ * Points are expected in the same local metre coordinate system. The object is
+ * stateless, so it can be used from tests, offline analysis tools and apps.
+ */
 object MetricsEvaluator {
 
-    /** Scores [estimated] against [reference] over their common prefix; returns EMPTY when too short. */
+    /**
+     * Scores [estimated] against [reference] over their common prefix.
+     *
+     * Returns [AccuracyMetrics.EMPTY] when fewer than two paired points are
+     * available.
+     */
     fun compute(
         estimated: List<Pair<Double, Double>>,
         reference: List<Pair<Double, Double>>
@@ -39,7 +49,7 @@ object MetricsEvaluator {
         return AccuracyMetrics(rmse, mae, maxError, lag, stability, n)
     }
 
-    /** Scores two estimate tracks against the same reference. */
+    /** Scores two estimated tracks against the same reference track. */
     fun compareTracks(
         trackA: List<Pair<Double, Double>>,
         trackB: List<Pair<Double, Double>>,

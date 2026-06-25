@@ -1,20 +1,34 @@
 package com.katka.engine.smoothing
 
+import com.katka.engine.neural.NeuralNetworkTrainer
 import com.katka.engine.neural.TrainingSample
 
-/** A fitted normaliser plus the normalised training samples it produced. */
+/**
+ * Training dataset produced from a recorded smoothing session.
+ *
+ * @property normalizer Fitted feature normalizer that must be stored with the model.
+ * @property samples Normalized feature/label pairs for [NeuralNetworkTrainer].
+ */
 data class SmoothingDataset(
     val normalizer: FeatureNormalizer,
     val samples: List<TrainingSample>
 )
 
-/** Accumulates (features → optimal alpha*) training pairs from a classical-filter session. */
+/**
+ * Builds neural-smoother training samples from a filter session.
+ *
+ * Feed every completed [SmootherInput] into [addStep]. Once enough points are
+ * available, the collector estimates the target blend weight and stores the raw
+ * feature row. Call [buildDataset] after recording to fit the normalizer and
+ * produce samples ready for [NeuralNetworkTrainer].
+ */
 class SmoothingTrainingCollector {
 
     private val window = SmootherWindow()
     private val rawFeatureRows = mutableListOf<DoubleArray>()
     private val alphaStars = mutableListOf<Double>()
 
+    /** Number of training samples collected so far. */
     val sampleCount: Int get() = rawFeatureRows.size
 
     /** Feeds one completed filter step, emitting a training pair once the window is full. */
@@ -32,6 +46,7 @@ class SmoothingTrainingCollector {
         alphaStars.add(OptimalAlpha.solve(xKf, xSg, xStar, phi))
     }
 
+    /** Clears collected windows and training rows. */
     fun reset() {
         window.clear()
         rawFeatureRows.clear()

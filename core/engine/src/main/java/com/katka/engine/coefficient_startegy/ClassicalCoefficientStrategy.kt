@@ -5,7 +5,19 @@ import com.katka.engine.model.GainResult
 import com.katka.model.Observation
 import kotlin.math.ln
 
-/** Classical Riccati Kalman-gain strategy: builds R from GPS accuracy (optionally Sage-Husa adaptive) and a Joseph-form posterior. */
+/**
+ * Classical Kalman-gain strategy.
+ *
+ * The strategy builds the measurement-noise matrix `R` from GPS accuracy,
+ * clamps unrealistic accuracy values and optionally blends this value with a
+ * Sage-Husa-style adaptive estimate based on recent innovations.
+ *
+ * @param minAccuracyM Lower bound for reported GPS accuracy, in metres.
+ * @param maxAccuracyM Upper bound for reported GPS accuracy, in metres.
+ * @param adaptiveR Whether to adapt `R` from recent innovation statistics.
+ * @param adaptiveWindow Number of recent innovations used by the adaptive estimate.
+ * @param forgettingB Forgetting factor for the adaptive `R` estimate.
+ */
 class ClassicalCoefficientStrategy(
     private val minAccuracyM: Float = 1.0f,
     private val maxAccuracyM: Float = 50.0f,

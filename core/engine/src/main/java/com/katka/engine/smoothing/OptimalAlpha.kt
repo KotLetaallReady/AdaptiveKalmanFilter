@@ -2,8 +2,8 @@ package com.katka.engine.smoothing
 
 import kotlin.math.sqrt
 
-/** Computes the analytic optimal trust weight alpha* used as the smoother's training label. */
-object OptimalAlpha {
+/** Internal label builder for neural-smoother training. */
+internal object OptimalAlpha {
 
     private const val DEGENERATE_EPS = 1e-9
 

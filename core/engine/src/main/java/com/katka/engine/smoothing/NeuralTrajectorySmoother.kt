@@ -2,16 +2,31 @@ package com.katka.engine.smoothing
 
 import com.katka.engine.neural.NeuralNetwork
 
-/** Inference-time fixed-lag smoother: predicts alpha and blends the Kalman and Savitzky-Golay central points. */
+/**
+ * Inference-time fixed-lag smoother for a Kalman trajectory.
+ *
+ * Each call to [push] adds one [SmootherInput]. Once the internal window is
+ * full, the smoother predicts an `alpha` value with [network] and blends the
+ * Kalman point with a Savitzky-Golay estimate for the window centre.
+ *
+ * @param network Trained neural network that predicts the blend weight.
+ * @param normalizer Feature normalizer fitted on the same data as [network].
+ */
 class NeuralTrajectorySmoother(
     private val network: NeuralNetwork,
     private val normalizer: FeatureNormalizer
 ) {
     private val window = SmootherWindow()
 
+    /** Clears the internal window so the next [push] starts a new sequence. */
     fun reset() = window.clear()
 
-    /** Pushes one filter step; returns a [SmoothedSample] for the central point once the window is full, else null. */
+    /**
+     * Adds one filter step and returns a smoothed sample when the window is full.
+     *
+     * Returns `null` during the warm-up period before enough points have been
+     * collected.
+     */
     fun push(input: SmootherInput): SmoothedSample? {
         window.push(input)
         if (!window.isFull) return null

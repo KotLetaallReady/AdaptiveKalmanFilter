@@ -1,6 +1,11 @@
 package com.katka.engine.neural
 
-/** Storage boundary for the serialised smoother model; implemented per platform (Android files, in-memory, …). */
+/**
+ * Storage boundary for the serialized smoother model.
+ *
+ * Implement this interface to decide where a trained model lives: Android
+ * private files, memory, a database or another platform-specific location.
+ */
 interface SmootherStore {
     /** Persists the serialised model, overwriting any previous value. */
     fun save(text: String)

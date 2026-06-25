@@ -2,7 +2,19 @@ package com.katka.engine.model
 
 import com.katka.engine.MatrixOps
 
-/** Filter state x = [x, y, vx, vy] with its 4×4 error covariance P. */
+/**
+ * State vector of the two-dimensional constant-velocity Kalman filter.
+ *
+ * Positions are local metres relative to the filter reference point. Velocities
+ * are metres per second. [P] is the 4 by 4 covariance matrix for
+ * `[x, y, vx, vy]`.
+ *
+ * @property x Local X position in metres.
+ * @property y Local Y position in metres.
+ * @property vx Local X velocity in metres per second.
+ * @property vy Local Y velocity in metres per second.
+ * @property P State covariance matrix.
+ */
 data class KalmanState(
     val x: Double,
     val y: Double,

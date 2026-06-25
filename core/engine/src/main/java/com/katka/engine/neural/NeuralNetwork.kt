@@ -1,10 +1,19 @@
 package com.katka.engine.neural
 
+import com.katka.engine.smoothing.NeuralTrajectorySmoother
 import kotlin.math.exp
 import kotlin.math.sqrt
 import kotlin.random.Random
 
-/** Compact feedforward MLP (pure Kotlin) with ReLU hidden layers and a configurable output activation. */
+/**
+ * Small feed-forward neural network implemented in pure Kotlin.
+ *
+ * The network is used by [NeuralTrajectorySmoother] to predict a single blend
+ * weight, but the topology is configurable for experiments and tests.
+ *
+ * @param config Network topology and output activation.
+ * @param seed Random seed used for deterministic weight initialization.
+ */
 class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
 
     /** Learnable weights per connection, row-major: weights[l][i][j] links neuron j in layer l to neuron i in l+1. */
@@ -45,7 +54,7 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
     }
 
     /** Forward pass returning per-layer pre- and post-activations for backpropagation. */
-    fun forwardWithCache(input: DoubleArray): ForwardCache {
+    internal fun forwardWithCache(input: DoubleArray): ForwardCache {
         val nLayers = weights.size
         val preActs = arrayOfNulls<DoubleArray>(nLayers)
         val acts = arrayOfNulls<DoubleArray>(nLayers + 1)
@@ -82,13 +91,13 @@ class NeuralNetwork(val config: NetworkConfig, seed: Long = 42L) {
     }
 
     /** Per-layer activations cached during a forward pass for use in backpropagation. */
-    data class ForwardCache(
+    internal data class ForwardCache(
         val preActivations: Array<DoubleArray>,
         val activations: Array<DoubleArray>
     )
 }
 
-/** Activation applied to the output layer (hidden layers are always ReLU). */
+/** Activation function applied to the output layer. Hidden layers always use ReLU. */
 enum class OutputActivation {
     /** Identity, for unbounded regression targets. */
     LINEAR,
@@ -96,19 +105,26 @@ enum class OutputActivation {
     SIGMOID
 }
 
-/** Immutable descriptor of the MLP topology and output activation. */
+/**
+ * Immutable descriptor of a [NeuralNetwork] topology.
+ *
+ * @property inputSize Number of input features.
+ * @property hiddenSizes Hidden layer sizes in order.
+ * @property outputSize Number of output neurons.
+ * @property outputActivation Activation applied to the output layer.
+ */
 data class NetworkConfig(
     val inputSize: Int,
     val hiddenSizes: List<Int>,
     val outputSize: Int,
     val outputActivation: OutputActivation = OutputActivation.SIGMOID
 ) {
-    /** Flat array of all layer sizes: input, hidden…, output. */
+    /** Flat array of all layer sizes: input, hidden layers and output. */
     val allSizes: IntArray
         get() = (listOf(inputSize) + hiddenSizes + listOf(outputSize)).toIntArray()
 
     companion object {
-        /** Default smoother topology: 6 → 8 → 4 → 1 with a sigmoid output. */
+        /** Default smoother topology: 6 -> 8 -> 4 -> 1 with a sigmoid output. */
         fun default() = NetworkConfig(
             inputSize = 6,
             hiddenSizes = listOf(8, 4),

@@ -3,23 +3,34 @@ package com.katka.data
 import com.katka.model.Observation
 import kotlinx.coroutines.flow.Flow
 
-/** Source of fused sensor observations (GPS + IMU) driving the Kalman filter; platform-agnostic. */
+/**
+ * Platform-independent source of [Observation] values.
+ *
+ * Implement this interface when the library should read measurements from a
+ * phone, a file, a simulator or any other source. The engine only depends on
+ * this abstraction and does not require Android classes.
+ */
 interface SensorDataSource {
 
-    /** Cold Flow of observations; collect it to drive the filter. */
+    /** Stream of sensor observations used to drive the filter pipeline. */
     val observations: Flow<Observation>
 
-    /** Starts acquiring sensor data; idempotent. */
+    /** Starts acquisition. Implementations should make repeated calls safe. */
     fun start()
 
-    /** Stops acquiring sensor data and releases resources; idempotent. */
+    /** Stops acquisition and releases resources. Implementations should make repeated calls safe. */
     fun stop()
 
     /** Whether the source is currently active. */
     val isRunning: Boolean
 }
 
-/** Replays a fixed list of observations with no delay, for tests and previews. */
+/**
+ * In-memory [SensorDataSource] that emits a fixed list of observations.
+ *
+ * This is useful for unit tests, recorded routes and simple demos where no
+ * real sensors are available.
+ */
 class ReplaySensorDataSource(
     private val items: List<Observation>
 ) : SensorDataSource {

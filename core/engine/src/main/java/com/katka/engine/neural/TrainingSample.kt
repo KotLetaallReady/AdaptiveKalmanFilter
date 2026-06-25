@@ -1,6 +1,11 @@
 package com.katka.engine.neural
 
-/** One (features, labels) training pair consumed by [NeuralNetworkTrainer]. */
+/**
+ * One training pair consumed by [NeuralNetworkTrainer].
+ *
+ * @property features Input feature vector.
+ * @property labels Expected output vector.
+ */
 data class TrainingSample(
     val features: DoubleArray,
     val labels: DoubleArray

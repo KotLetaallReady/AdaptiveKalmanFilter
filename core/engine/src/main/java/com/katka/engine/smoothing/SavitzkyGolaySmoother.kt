@@ -2,8 +2,8 @@ package com.katka.engine.smoothing
 
 import kotlin.math.abs
 
-/** Savitzky-Golay smoothing: a degree-2 least-squares fit evaluated at the window centre. */
-object SavitzkyGolaySmoother {
+/** Internal Savitzky-Golay smoother used by the neural trajectory smoother. */
+internal object SavitzkyGolaySmoother {
 
     /** Returns the quadratic-fit value at the centre of a symmetric 1-D window. */
     fun smoothCentre(values: DoubleArray): Double {

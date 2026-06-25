@@ -7,7 +7,17 @@ import com.katka.engine.model.KalmanState
 import com.katka.model.Observation
 import kotlin.math.cos
 
-/** Discrete-time constant-velocity Kalman filter for 2-D tracking, with IMU control input and a local equirectangular projection. */
+/**
+ * Discrete-time Kalman filter for two-dimensional position tracking.
+ *
+ * The filter works in a local metre-based coordinate system whose origin is
+ * created from the first accepted GPS fix. Incoming WGS-84 coordinates are
+ * projected into that local frame, processed with a constant-velocity model
+ * and can then be converted back to latitude/longitude.
+ *
+ * @param processNoiseStd Standard deviation of the process noise used in the
+ * prediction step. Larger values make the filter adapt faster but smooth less.
+ */
 class KalmanFilter(
     private val processNoiseStd: Double = 0.5
 ) {
@@ -15,14 +25,15 @@ class KalmanFilter(
     private var lastTimestamp: Long = -1L
     private var lastWallClockMs: Long = -1L
 
-    /** Reference latitude — origin of the local coordinate system. */
+    /** Latitude of the first accepted GPS fix, used as the local coordinate origin. */
     var refLat: Double = 0.0
         private set
 
-    /** Reference longitude — origin of the local coordinate system. */
+    /** Longitude of the first accepted GPS fix, used as the local coordinate origin. */
     var refLon: Double = 0.0
         private set
 
+    /** Whether the filter already has an initial state and reference point. */
     val isInitialised: Boolean get() = state != null
 
     private val H: Array<DoubleArray> = arrayOf(
@@ -40,7 +51,13 @@ class KalmanFilter(
         strategy?.reset()
     }
 
-    /** Processes one observation and returns the posterior state with diagnostics; initialises on the first call. */
+    /**
+     * Processes one observation and returns the posterior state with diagnostics.
+     *
+     * The first accepted observation initializes the local coordinate system and
+     * returns an initial [FilterResult]. Later calls run the prediction and
+     * correction steps using the supplied [strategy].
+     */
     fun process(obs: Observation, strategy: CoefficientStrategy): FilterResult {
         if (!isInitialised) {
             return initialise(obs)
@@ -147,7 +164,12 @@ class KalmanFilter(
     /** Returns the current posterior estimate without processing a new observation. */
     fun getCurrentState(): KalmanState? = state
 
-    /** Converts WGS-84 degrees to local metres (equirectangular projection about the reference point). */
+    /**
+     * Converts WGS-84 degrees into local metres relative to [refLat] and [refLon].
+     *
+     * Call this after the filter has been initialized by [process], otherwise
+     * the reference point is still `(0.0, 0.0)`.
+     */
     fun geoToLocal(lat: Double, lon: Double): Pair<Double, Double> {
         val R = EARTH_RADIUS_M
         val dLat = Math.toRadians(lat - refLat)
@@ -157,7 +179,7 @@ class KalmanFilter(
         return x to y
     }
 
-    /** Converts local metres back to WGS-84 degrees (inverse of [geoToLocal]). */
+    /** Converts local metre coordinates back to WGS-84 degrees. */
     fun localToGeo(x: Double, y: Double): Pair<Double, Double> {
         val R = EARTH_RADIUS_M
         val lat = refLat + Math.toDegrees(y / R)

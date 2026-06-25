@@ -6,8 +6,8 @@ import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.sqrt
 
-/** The six aggregated context features (innovation mean/std, turn angle, speed, accuracy, step jitter) the smoother network consumes. */
-object SmootherFeatures {
+/** Internal feature extractor used by training and inference for the neural smoother. */
+internal object SmootherFeatures {
 
     const val L = 11
     const val HALF = 5

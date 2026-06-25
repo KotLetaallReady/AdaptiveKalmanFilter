@@ -26,8 +26,18 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 
 /**
- * Android [SensorDataSource]: fuses GPS (FusedLocationProvider, with a LocationManager fallback)
- * with linear acceleration and game-rotation IMU, rotated into the geographic frame.
+ * Android implementation of [SensorDataSource].
+ *
+ * The source requests high-accuracy GPS updates through Google Play Services
+ * when available and falls back to [LocationManager] otherwise. It also listens
+ * to linear acceleration and game-rotation sensors, then rotates acceleration
+ * into the geographic frame for use by the Kalman prediction step.
+ *
+ * The caller is responsible for location permissions before [start] is called.
+ *
+ * @param context Android context used to access system services.
+ * @param gpsIntervalMs Requested interval between GPS fixes, in milliseconds.
+ * @param minDisplacementM Minimum displacement between location updates, in metres.
  */
 class AndroidSensorDataSource(
     private val context: Context,
@@ -203,7 +213,12 @@ class AndroidSensorDataSource(
         return Triple(axGeo, ayGeo, true)
     }
 
-    /** Acquires a wake lock and registers GPS and IMU listeners for a new session. */
+    /**
+     * Acquires a wake lock and registers GPS and IMU listeners for a new session.
+     *
+     * This method expects location permission to have already been granted by
+     * the host application.
+     */
     @SuppressLint("MissingPermission")
     override fun start() {
         if (isRunning) return
@@ -259,7 +274,7 @@ class AndroidSensorDataSource(
         )
     }
 
-    /** Releases the wake lock and unregisters all listeners. */
+    /** Releases the wake lock and unregisters all GPS and IMU listeners. */
     override fun stop() {
         if (!isRunning) return
         if (wakeLock.isHeld) wakeLock.release()

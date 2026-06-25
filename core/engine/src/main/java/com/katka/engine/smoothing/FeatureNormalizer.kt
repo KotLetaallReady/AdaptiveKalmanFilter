@@ -2,7 +2,16 @@ package com.katka.engine.smoothing
 
 import kotlin.math.sqrt
 
-/** Per-feature standardisation (f - mean) / std, fitted on the training set and persisted with the model. */
+/**
+ * Per-feature standardization used by the neural trajectory smoother.
+ *
+ * Store [mean] and [std] together with the trained network and use the same
+ * normalizer during inference. Near-zero standard deviations are treated as
+ * `1.0` to avoid division by zero.
+ *
+ * @property mean Mean value for each feature.
+ * @property std Population standard deviation for each feature.
+ */
 class FeatureNormalizer(
     val mean: DoubleArray,
     val std: DoubleArray
@@ -39,7 +48,7 @@ class FeatureNormalizer(
         }
 
         /** Identity transform (mean 0, std 1). */
-        fun identity(n: Int = SmootherFeatures.COUNT) =
+        fun identity(n: Int = 6) =
             FeatureNormalizer(DoubleArray(n) { 0.0 }, DoubleArray(n) { 1.0 })
     }
 }

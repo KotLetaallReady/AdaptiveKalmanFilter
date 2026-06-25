@@ -2,7 +2,19 @@ package com.katka.engine.neural
 
 import kotlin.math.sqrt
 
-/** Trains a [NeuralNetwork] in place with mini-batch Adam and MSE loss. */
+/**
+ * Trains a [NeuralNetwork] in place with mini-batch Adam and mean squared error.
+ *
+ * This class is intentionally platform-free, so it can be used in JVM tests,
+ * desktop tools or Android demo screens.
+ *
+ * @param network Network instance to update.
+ * @param learningRate Adam learning rate.
+ * @param batchSize Number of samples per mini-batch.
+ * @param beta1 Adam first-moment decay.
+ * @param beta2 Adam second-moment decay.
+ * @param eps Small denominator offset for numerical stability.
+ */
 class NeuralNetworkTrainer(
     private val network: NeuralNetwork,
     private val learningRate: Double = 1e-3,

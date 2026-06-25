@@ -2,8 +2,8 @@ package com.katka.engine
 
 import kotlin.math.abs
 
-/** Minimal row-major matrix arithmetic used by the Kalman filter (no external linear-algebra library). */
-object MatrixOps {
+/** Internal row-major matrix arithmetic used by the Kalman filter. */
+internal object MatrixOps {
 
     /** Zero matrix of the given shape. */
     fun zeros(rows: Int, cols: Int): Array<DoubleArray> =

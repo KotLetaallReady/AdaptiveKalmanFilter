@@ -1,6 +1,11 @@
 package com.katka.engine.neural
 
-/** Dependency-free (de)serialisation of a trained smoother model to a text blob (no org.json). */
+/**
+ * Dependency-free serialization of a trained smoother model to a text blob.
+ *
+ * Most users should access this through [SmootherRepository]. Use the codec
+ * directly only when you need to move the model text between custom systems.
+ */
 object SmootherCodec {
 
     private const val VERSION = "v2"

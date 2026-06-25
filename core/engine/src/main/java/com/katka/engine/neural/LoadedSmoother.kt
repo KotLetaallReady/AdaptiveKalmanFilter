@@ -1,6 +1,15 @@
 package com.katka.engine.neural
 
-/** A restored smoother model: the trained network plus the feature normalisation (mean/std) it was trained with. */
+import com.katka.engine.smoothing.FeatureNormalizer
+import com.katka.engine.smoothing.NeuralTrajectorySmoother
+
+/**
+ * Restored smoother model loaded from [SmootherRepository].
+ *
+ * @property network Trained network used by [NeuralTrajectorySmoother].
+ * @property featureMean Feature means that must be passed to [FeatureNormalizer].
+ * @property featureStd Feature standard deviations that must be passed to [FeatureNormalizer].
+ */
 data class LoadedSmoother(
     val network: NeuralNetwork,
     val featureMean: DoubleArray,
